@@ -1,0 +1,148 @@
+{
+  "projectType": "saas",
+  "projectName": "Loom",
+  "projectDescription": "An Elixir-native AI coding assistant with persistent decision graphs, repo intelligence, and a Phoenix LiveView UI",
+  "theme": "palm",
+  "primaryColor": "#6B46C1",
+  "lightColor": "#9F7AEA",
+  "darkColor": "#553C9A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/decision-graphs",
+              "concepts/repo-intelligence",
+              "concepts/sessions",
+              "concepts/context-window"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/cli",
+              "features/web-ui",
+              "features/tools",
+              "features/permissions",
+              "features/mcp",
+              "features/lsp"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/configuration",
+              "guides/project-rules",
+              "guides/model-selection",
+              "guides/architect-mode",
+              "guides/sub-agents"
+            ]
+          },
+          {
+            "group": "Tools Reference",
+            "pages": [
+              "tools/overview",
+              "tools/file-operations",
+              "tools/search",
+              "tools/shell-and-git",
+              "tools/decision-tracking"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core APIs",
+            "pages": [
+              "api/session",
+              "api/decision-graph",
+              "api/repo-intel"
+            ]
+          },
+          {
+            "group": "Integration",
+            "pages": [
+              "api/mcp-server",
+              "api/lsp-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced",
+        "groups": [
+          {
+            "group": "Deployment",
+            "pages": [
+              "advanced/building",
+              "advanced/deployment",
+              "advanced/releases"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "advanced/architecture-deep-dive",
+              "advanced/swarm-design",
+              "advanced/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Phoenix LiveView web UI with real-time streaming chat and decision graph visualization",
+    "Interactive CLI with REPL-style interface and markdown rendering",
+    "Persistent decision graph with 7 node types tracking reasoning across sessions",
+    "Repository intelligence with ETS-backed indexing and relevance ranking",
+    "Token-aware context window with automatic budget allocation",
+    "11 built-in tools for file operations, search, shell, git, and decision tracking",
+    "Multi-provider LLM support via req_llm (16+ providers, 665+ models)",
+    "Session persistence with SQLite storage",
+    "Permission system with per-tool, per-path approval",
+    "Sub-agent search for parallel codebase exploration",
+    "MCP protocol server and client support",
+    "LSP diagnostics integration",
+    "Architect mode with two-model workflow (planning + execution)"
+  ],
+  "publicApiSurface": [
+    "Loom.Session.send_message/2",
+    "Loom.Session.get_history/1",
+    "Loom.Session.update_model/2",
+    "Loom.Session.set_mode/2",
+    "Loom.Session.Manager.start_session/1",
+    "Loom.Session.Manager.list_sessions/0",
+    "Loom.Decisions.Graph.add_node/1",
+    "Loom.Decisions.Graph.add_edge/4",
+    "Loom.Decisions.Graph.list_nodes/1",
+    "Loom.Decisions.Pulse.run/1",
+    "Loom.RepoIntel.Index.refresh/1",
+    "Loom.RepoIntel.RepoMap.generate/1",
+    "Loom.Tools.FileRead",
+    "Loom.Tools.FileWrite",
+    "Loom.Tools.FileEdit",
+    "Loom.Tools.FileSearch",
+    "Loom.Tools.ContentSearch",
+    "Loom.Tools.DirectoryList",
+    "Loom.Tools.Shell",
+    "Loom.Tools.Git",
+    "Loom.Tools.DecisionLog",
+    "Loom.Tools.DecisionQuery",
+    "Loom.Tools.SubAgent"
+  ]
+}
