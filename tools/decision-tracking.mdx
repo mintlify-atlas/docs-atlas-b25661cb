@@ -1,0 +1,528 @@
+---
+title: Decision Tracking
+description: Log and query decisions, goals, actions, and observations using the decision graph
+---
+
+Loom includes a decision graph system for tracking goals, decisions, actions, and observations across agent sessions. This provides persistent context and enables agents to learn from past decisions.
+
+## Overview
+
+The decision tracking system uses a graph database to store:
+- **Goals** - High-level objectives
+- **Decisions** - Choices made during execution
+- **Options** - Alternative approaches considered
+- **Actions** - Steps taken to achieve goals
+- **Outcomes** - Results of actions
+- **Observations** - Learnings and insights
+- **Revisits** - Re-evaluations of previous decisions
+
+Nodes are connected with typed edges (`leads_to`, `blocks`, `enables`, etc.) to represent relationships.
+
+## decision_log
+
+Logs a decision, goal, action, or observation to the decision graph.
+
+<ParamField path="node_type" type="string" required>
+  Type of decision node. Valid types:
+  - `goal` - High-level objective
+  - `decision` - Choice or determination
+  - `option` - Alternative approach
+  - `action` - Concrete step taken
+  - `outcome` - Result of an action
+  - `observation` - Learning or insight
+  - `revisit` - Re-evaluation of previous decision
+</ParamField>
+
+<ParamField path="title" type="string" required>
+  Short, descriptive title for this node
+</ParamField>
+
+<ParamField path="description" type="string">
+  Detailed description of the decision, goal, or observation
+</ParamField>
+
+<ParamField path="confidence" type="integer">
+  Confidence level from 0-100. Use for decisions and options to indicate certainty.
+</ParamField>
+
+<ParamField path="parent_id" type="string">
+  ID of parent node to connect via edge. Creates a relationship in the graph.
+</ParamField>
+
+<ParamField path="edge_type" type="string" default="leads_to">
+  Type of edge to create to parent. Common types:
+  - `leads_to` - Sequential relationship
+  - `blocks` - Prevents or conflicts with
+  - `enables` - Makes possible
+  - `requires` - Depends on
+</ParamField>
+
+### Returns
+
+Success response includes:
+- Node type and title
+- Generated node ID
+- Edge information if parent was linked
+
+```
+Logged goal: Implement user authentication (id: 550e8400-e29b-41d4-a716-446655440000)
+```
+
+With parent link:
+```
+Logged action: Add auth middleware (id: ...), linked to 550e8400-... via leads_to
+```
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Log a goal
+{:ok, result} = Loom.Tools.DecisionLog.run(
+  %{
+    node_type: "goal",
+    title: "Implement user authentication",
+    description: "Add JWT-based auth to API endpoints",
+    confidence: 90
+  },
+  %{session_id: "session-123", project_path: "/project"}
+)
+
+# Extract ID from result for linking
+goal_id = "550e8400-e29b-41d4-a716-446655440000"
+```
+
+```elixir Log a decision with parent
+Loom.Tools.DecisionLog.run(
+  %{
+    node_type: "decision",
+    title: "Use Guardian library for JWT",
+    description: "Guardian provides robust JWT handling and is well-maintained",
+    confidence: 85,
+    parent_id: goal_id,
+    edge_type: "leads_to"
+  },
+  context
+)
+```
+
+```elixir Log an observation
+Loom.Tools.DecisionLog.run(
+  %{
+    node_type: "observation",
+    title: "Tests passed after refactoring",
+    description: "All 45 tests passed. No performance degradation observed."
+  },
+  context
+)
+```
+
+```elixir Track alternative options
+# Log the chosen decision
+{:ok, result} = DecisionLog.run(
+  %{
+    node_type: "decision",
+    title: "Use PostgreSQL for storage",
+    confidence: 90
+  },
+  context
+)
+decision_id = extract_id(result)
+
+# Log alternative that was considered
+DecisionLog.run(
+  %{
+    node_type: "option",
+    title: "Use MongoDB instead",
+    description: "Considered for flexible schema, but relational model fits better",
+    confidence: 40,
+    parent_id: decision_id,
+    edge_type: "blocks"  # This option blocks/conflicts with the decision
+  },
+  context
+)
+```
+
+```elixir Action with outcome
+# Log action
+{:ok, result} = DecisionLog.run(
+  %{
+    node_type: "action",
+    title: "Add Guardian dependency"
+  },
+  context
+)
+action_id = extract_id(result)
+
+# Log outcome
+DecisionLog.run(
+  %{
+    node_type: "outcome",
+    title: "Guardian installed successfully",
+    description: "Version 2.3.0 installed. All dependencies resolved.",
+    parent_id: action_id,
+    edge_type: "leads_to"
+  },
+  context
+)
+```
+</CodeGroup>
+
+### Decision Graph Patterns
+
+<AccordionGroup>
+  <Accordion title="Goal → Decision → Action">
+    Classic workflow for tracking implementation:
+    ```elixir
+    # 1. Define goal
+    {:ok, goal} = log_node("goal", "Add caching layer")
+    
+    # 2. Make decision
+    {:ok, decision} = log_node(
+      "decision",
+      "Use ETS for cache",
+      parent_id: goal.id
+    )
+    
+    # 3. Take action
+    {:ok, action} = log_node(
+      "action",
+      "Implement cache module",
+      parent_id: decision.id
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Decision with Multiple Options">
+    Track alternatives considered:
+    ```elixir
+    # Log decision
+    {:ok, decision} = log_node("decision", "Choose database")
+    
+    # Log option A (chosen)
+    log_node(
+      "option",
+      "PostgreSQL",
+      confidence: 90,
+      parent_id: decision.id,
+      edge_type: "enables"
+    )
+    
+    # Log option B (rejected)
+    log_node(
+      "option",
+      "MySQL",
+      confidence: 60,
+      parent_id: decision.id,
+      edge_type: "blocks"
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Observations and Learnings">
+    Document insights for future reference:
+    ```elixir
+    log_node(
+      "observation",
+      "ETS cache reduced API latency by 60%",
+      description: "Measured over 1000 requests. P99 latency dropped from 150ms to 60ms."
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Revisiting Decisions">
+    Mark decisions that need reconsideration:
+    ```elixir
+    {:ok, original_decision_id} = find_decision("Use ETS cache")
+    
+    log_node(
+      "revisit",
+      "Consider distributed cache",
+      description: "ETS doesn't work across nodes. Need Redis or Cachex.",
+      parent_id: original_decision_id
+    )
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## decision_query
+
+Query the decision graph for active goals, recent decisions, pulse reports, or search by keyword.
+
+<ParamField path="query_type" type="string" required>
+  Type of query to run:
+  - `active_goals` - List goals with status "active"
+  - `recent_decisions` - Most recent decision nodes
+  - `pulse` - Generate summary report
+  - `search` - Search by keyword in title/description
+</ParamField>
+
+<ParamField path="search_term" type="string">
+  Search term for `search` query type. Matches title and description fields.
+</ParamField>
+
+<ParamField path="limit" type="integer" default="10">
+  Maximum results to return
+</ParamField>
+
+### Query Types
+
+#### active_goals
+
+Retrieve all goals with status "active".
+
+```elixir
+{:ok, result} = Loom.Tools.DecisionQuery.run(
+  %{query_type: "active_goals"},
+  context
+)
+```
+
+**Returns:**
+```
+Active Goals:
+- [goal] Implement user authentication (confidence: 90%) (active, id: 550e8400-...)
+- [goal] Add rate limiting (confidence: 75%) (active, id: 660e9500-...)
+```
+
+#### recent_decisions
+
+Get the most recent decision nodes (sorted by insertion time).
+
+```elixir
+Loom.Tools.DecisionQuery.run(
+  %{
+    query_type: "recent_decisions",
+    limit: 5
+  },
+  context
+)
+```
+
+**Returns:**
+```
+Recent Decisions:
+- [decision] Use Guardian for JWT (confidence: 85%) (completed, id: ...)
+- [decision] Use PostgreSQL for storage (confidence: 90%) (completed, id: ...)
+- [decision] Deploy to Fly.io (confidence: 80%) (active, id: ...)
+```
+
+#### pulse
+
+Generate a summary report of the decision graph state.
+
+```elixir
+Loom.Tools.DecisionQuery.run(
+  %{query_type: "pulse"},
+  context
+)
+```
+
+**Returns:**
+```
+Decision Graph Pulse Report:
+
+Active Goals: 3
+Recent Decisions: 12
+Pending Actions: 5
+Completed Outcomes: 8
+
+Top confidence decisions:
+- Use PostgreSQL for storage (90%)
+- Implement user authentication (90%)
+- Deploy to Fly.io (85%)
+
+Low confidence areas:
+- Choice of caching strategy (45%)
+```
+
+#### search
+
+Search for nodes by keyword in title or description.
+
+```elixir
+Loom.Tools.DecisionQuery.run(
+  %{
+    query_type: "search",
+    search_term: "authentication",
+    limit: 10
+  },
+  context
+)
+```
+
+**Returns:**
+```
+Search Results for 'authentication':
+- [goal] Implement user authentication (confidence: 90%) (active, id: ...)
+- [decision] Use Guardian for JWT (confidence: 85%) (completed, id: ...)
+- [action] Add authentication middleware (completed, id: ...)
+- [observation] Auth tests passed successfully (completed, id: ...)
+```
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Check active work
+# See what goals are currently active
+{:ok, goals} = DecisionQuery.run(
+  %{query_type: "active_goals"},
+  context
+)
+
+# Review recent decisions
+{:ok, decisions} = DecisionQuery.run(
+  %{query_type: "recent_decisions", limit: 10},
+  context
+)
+```
+
+```elixir Search for context
+# Find all auth-related decisions
+DecisionQuery.run(
+  %{
+    query_type: "search",
+    search_term: "auth"
+  },
+  context
+)
+
+# Find caching decisions
+DecisionQuery.run(
+  %{
+    query_type: "search",
+    search_term: "cache"
+  },
+  context
+)
+```
+
+```elixir Generate status report
+# Get overall pulse of the project
+{:ok, pulse} = DecisionQuery.run(
+  %{query_type: "pulse"},
+  context
+)
+
+# Use this to understand project state and priorities
+```
+</CodeGroup>
+
+## Workflow Example
+
+Complete example of using decision tracking in an agent workflow:
+
+```elixir
+# 1. Check existing goals
+{:ok, goals} = DecisionQuery.run(
+  %{query_type: "active_goals"},
+  context
+)
+
+# 2. Log new goal
+{:ok, goal_result} = DecisionLog.run(
+  %{
+    node_type: "goal",
+    title: "Add caching to API endpoints",
+    description: "Reduce database load and improve response times",
+    confidence: 85
+  },
+  context
+)
+
+goal_id = extract_id_from_result(goal_result)
+
+# 3. Consider options
+{:ok, option1} = DecisionLog.run(
+  %{
+    node_type: "option",
+    title: "Use ETS for in-memory cache",
+    confidence: 70,
+    parent_id: goal_id
+  },
+  context
+)
+
+{:ok, option2} = DecisionLog.run(
+  %{
+    node_type: "option",
+    title: "Use Redis for distributed cache",
+    confidence: 85,
+    parent_id: goal_id
+  },
+  context
+)
+
+# 4. Make decision
+{:ok, decision_result} = DecisionLog.run(
+  %{
+    node_type: "decision",
+    title: "Use Redis with Redix client",
+    description: "Supports distributed caching across nodes. Well-maintained library.",
+    confidence: 90,
+    parent_id: goal_id,
+    edge_type: "leads_to"
+  },
+  context
+)
+
+decision_id = extract_id_from_result(decision_result)
+
+# 5. Take action
+{:ok, action_result} = DecisionLog.run(
+  %{
+    node_type: "action",
+    title: "Add Redix dependency and configure connection pool",
+    parent_id: decision_id,
+    edge_type: "leads_to"
+  },
+  context
+)
+
+# 6. Log outcome
+DecisionLog.run(
+  %{
+    node_type: "outcome",
+    title: "Cache implemented successfully",
+    description: "Redis connection pool configured. Cache hit rate: 78%",
+    parent_id: extract_id_from_result(action_result),
+    edge_type: "leads_to"
+  },
+  context
+)
+
+# 7. Query for summary
+{:ok, pulse} = DecisionQuery.run(
+  %{query_type: "pulse"},
+  context
+)
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Link Related Nodes" icon="link">
+    Always use `parent_id` to connect related decisions. This creates a navigable graph.
+  </Card>
+
+  <Card title="Use Confidence Scores" icon="percent">
+    Add confidence levels to decisions and options to track certainty over time.
+  </Card>
+
+  <Card title="Document Alternatives" icon="code-branch">
+    Log rejected options with `blocks` edges to remember why they weren't chosen.
+  </Card>
+
+  <Card title="Log Observations" icon="eye">
+    Capture learnings and metrics as observations for future reference.
+  </Card>
+</CardGroup>
+
+## Implementation Details
+
+Decision tracking tools are implemented in `lib/loom/tools/`:
+- `decision_log.ex` - Source: [lib/loom/tools/decision_log.ex:1](~/workspace/source/lib/loom/tools/decision_log.ex:1)
+- `decision_query.ex` - Source: [lib/loom/tools/decision_query.ex:1](~/workspace/source/lib/loom/tools/decision_query.ex:1)
+
+The graph is stored in `Loom.Schemas.DecisionNode` with edges in `Loom.Schemas.DecisionEdge`.

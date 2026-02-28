@@ -1,0 +1,513 @@
+---
+title: Repository Intelligence API
+description: Fast repository indexing, symbol extraction, and context generation for AI assistants
+---
+
+The Repository Intelligence API provides fast, intelligent code understanding capabilities. It indexes your codebase, extracts symbols with tree-sitter or regex, and generates ranked context for AI assistants.
+
+## Overview
+
+Repo Intel consists of three main components:
+
+1. **Index**: ETS-based file system indexing with metadata
+2. **RepoMap**: Symbol extraction and relevance ranking
+3. **ContextPacker**: Token-budgeted context generation
+
+## File Index
+
+The `Loom.RepoIntel.Index` module maintains a fast in-memory index of your project files.
+
+### build/1
+
+Perform a full scan of the project directory.
+
+```elixir
+# Build the index (auto-started on application boot)
+:ok = Loom.RepoIntel.Index.build()
+```
+
+<Info>
+The index automatically skips common directories like `.git`, `_build`, `deps`, `node_modules`, and `.loom`.
+</Info>
+
+### refresh/1
+
+Incremental update - rescan only files whose modification time changed.
+
+```elixir
+# Refresh after file changes
+:ok = Loom.RepoIntel.Index.refresh()
+```
+
+<Note>
+Use `refresh/1` instead of `build/1` for better performance after small changes. It only rescans modified files.
+</Note>
+
+### lookup/2
+
+Get metadata for a single file path.
+
+```elixir
+case Loom.RepoIntel.Index.lookup("lib/my_app/auth.ex") do
+  {:ok, meta} ->
+    IO.inspect(meta)
+    # %{
+    #   mtime: ~N[2024-01-15 10:30:00],
+    #   size: 4096,
+    #   type: :file,
+    #   language: :elixir
+    # }
+
+  :error ->
+    IO.puts("File not in index")
+end
+```
+
+<ParamField path="path" type="String.t()">
+  Relative file path from project root.
+</ParamField>
+
+<ResponseField name="{:ok, meta}" type="{:ok, map()}">
+  File metadata containing:
+  - `mtime` (NaiveDateTime.t()): Last modification time
+  - `size` (integer()): File size in bytes
+  - `type` (`:file`): Entry type (always `:file` for now)
+  - `language` (atom()): Detected programming language
+</ResponseField>
+
+<ResponseField name=":error" type="atom">
+  File not found in index.
+</ResponseField>
+
+### list_files/2
+
+List files with optional filters.
+
+```elixir
+# All Elixir files
+elixir_files = Loom.RepoIntel.Index.list_files(language: :elixir)
+
+# Files matching a pattern
+test_files = Loom.RepoIntel.Index.list_files(pattern: "test/**/*.exs")
+
+# Large files
+large_files = Loom.RepoIntel.Index.list_files(min_size: 10_000)
+
+# Size range
+medium_files = Loom.RepoIntel.Index.list_files(
+  min_size: 1000,
+  max_size: 10_000
+)
+
+# Combined filters
+results = Loom.RepoIntel.Index.list_files(
+  language: :typescript,
+  pattern: "src/**/*.ts",
+  max_size: 50_000
+)
+```
+
+<ParamField path="opts" type="keyword()" default="[]">
+  Filter options:
+  - `language: atom()` - Filter by programming language
+  - `pattern: String.t()` - Glob pattern (supports `**` for directories)
+  - `min_size: integer()` - Minimum file size in bytes
+  - `max_size: integer()` - Maximum file size in bytes
+</ParamField>
+
+<ResponseField name="files" type="[{String.t(), map()}]">
+  List of tuples `{path, metadata}`, sorted by path.
+</ResponseField>
+
+### stats/1
+
+Get summary statistics about the indexed repository.
+
+```elixir
+stats = Loom.RepoIntel.Index.stats()
+IO.inspect(stats)
+# %{
+#   total_files: 342,
+#   by_language: %{
+#     elixir: 156,
+#     javascript: 89,
+#     markdown: 45,
+#     json: 52
+#   },
+#   total_size: 2_456_789
+# }
+```
+
+<ResponseField name="stats" type="map()">
+  Statistics containing:
+  - `total_files` (integer()): Total number of indexed files
+  - `by_language` (map()): Count of files per language
+  - `total_size` (integer()): Combined size of all files in bytes
+</ResponseField>
+
+### detect_language/1
+
+Detect the programming language of a file by extension.
+
+```elixir
+lang = Loom.RepoIntel.Index.detect_language("src/utils.ts")
+# :typescript
+
+lang = Loom.RepoIntel.Index.detect_language("README.md")
+# :markdown
+
+lang = Loom.RepoIntel.Index.detect_language("unknown.xyz")
+# :unknown
+```
+
+<ParamField path="path" type="String.t()">
+  File path with extension.
+</ParamField>
+
+<ResponseField name="language" type="atom()">
+  Detected language: `:elixir`, `:javascript`, `:typescript`, `:python`, `:ruby`, `:rust`, `:go`, `:markdown`, `:json`, `:yaml`, `:html`, `:css`, `:sql`, `:shell`, or `:unknown`.
+</ResponseField>
+
+### set_project/2
+
+Change the project path and trigger a full rescan.
+
+```elixir
+Loom.RepoIntel.Index.set_project("/path/to/different/project")
+```
+
+## Symbol Extraction
+
+The `Loom.RepoIntel.RepoMap` module extracts symbols (functions, classes, modules) from source files.
+
+### extract_symbols/1
+
+Extract symbols from a source file using tree-sitter or regex.
+
+```elixir
+symbols = Loom.RepoIntel.RepoMap.extract_symbols("lib/my_app/accounts.ex")
+
+Enum.each(symbols, fn sym ->
+  IO.puts("#{sym.type} #{sym.name} at line #{sym.line}")
+end)
+
+# Output:
+# module MyApp.Accounts at line 1
+# function create_user at line 15
+# function get_user at line 28
+# function delete_user at line 42
+```
+
+<ParamField path="file_path" type="String.t()">
+  Absolute or relative path to source file.
+</ParamField>
+
+<ResponseField name="symbols" type="[map()]">
+  List of symbol maps containing:
+  - `name` (String.t()): Symbol name
+  - `type` (atom()): Symbol type (`:module`, `:function`, `:class`, `:struct`, etc.)
+  - `line` (integer()): Line number where symbol is defined
+  - `signature` (String.t() | nil): Function signature if available
+</ResponseField>
+
+<Info>
+Symbol extraction uses tree-sitter when available for accurate AST-based parsing. Falls back to regex patterns if tree-sitter is not installed.
+</Info>
+
+### tree_sitter_available?/0
+
+Check if tree-sitter based extraction is available.
+
+```elixir
+if Loom.RepoIntel.RepoMap.tree_sitter_available?() do
+  IO.puts("Using tree-sitter for accurate parsing")
+else
+  IO.puts("Using regex-based extraction")
+end
+```
+
+### extract_symbols_regex/1
+
+Force regex-based symbol extraction (bypasses tree-sitter).
+
+```elixir
+symbols = Loom.RepoIntel.RepoMap.extract_symbols_regex("src/api.js")
+```
+
+### rank_files/2
+
+Rank file entries by relevance for a given context.
+
+```elixir
+files = Loom.RepoIntel.Index.list_files(language: :elixir)
+
+ranked = Loom.RepoIntel.RepoMap.rank_files(files,
+  mentioned_files: ["lib/my_app/auth.ex"],
+  keywords: ["authentication", "session"]
+)
+
+Enum.each(ranked, fn {path, meta, score} ->
+  IO.puts("#{path} (score: #{score})")
+end)
+```
+
+<ParamField path="file_entries" type="[{String.t(), map()}]">
+  List of `{path, metadata}` tuples from `Index.list_files/1`.
+</ParamField>
+
+<ParamField path="opts" type="keyword()" default="[]">
+  Ranking options:
+  - `mentioned_files: [String.t()]` - Files mentioned in conversation (+100 score)
+  - `keywords: [String.t()]` - Relevant keywords (+10 per match)
+</ParamField>
+
+<ResponseField name="ranked_files" type="[{String.t(), map(), number()}]">
+  List of `{path, metadata, score}` tuples, sorted by score (highest first).
+</ResponseField>
+
+### generate/2
+
+Generate a text repo map within a token budget.
+
+```elixir
+{:ok, repo_map} = Loom.RepoIntel.RepoMap.generate(
+  "/workspace/my-app",
+  max_tokens: 4096,
+  mentioned_files: ["lib/router.ex"],
+  keywords: ["routing", "controller"]
+)
+
+IO.puts(repo_map)
+```
+
+<ParamField path="project_path" type="String.t()">
+  Root directory of the project.
+</ParamField>
+
+<ParamField path="opts" type="keyword()" default="[]">
+  Generation options:
+  - `max_tokens: integer()` - Token budget (default: 2048)
+  - `mentioned_files: [String.t()]` - Files to prioritize
+  - `keywords: [String.t()]` - Keywords for relevance ranking
+</ParamField>
+
+<ResponseField name="{:ok, repo_map}" type="{:ok, String.t()}">
+  Generated markdown text containing file paths and symbols, ranked by relevance.
+</ResponseField>
+
+## Context Packing
+
+The `Loom.RepoIntel.ContextPacker` module packs ranked files into a token-budgeted context string.
+
+### pack/3
+
+Pack ranked files into context within a token budget.
+
+```elixir
+files = Loom.RepoIntel.Index.list_files(language: :elixir)
+ranked = Loom.RepoIntel.RepoMap.rank_files(files, mentioned_files: ["lib/auth.ex"])
+
+context = Loom.RepoIntel.ContextPacker.pack(
+  ranked,
+  8192,  # token budget
+  project_path: "/workspace/my-app"
+)
+
+IO.puts(context)
+```
+
+<ParamField path="ranked_files" type="[{String.t(), map(), number()}]">
+  List of `{path, metadata, score}` tuples from `RepoMap.rank_files/2`.
+</ParamField>
+
+<ParamField path="token_budget" type="integer()">
+  Maximum tokens to use (1 token ≈ 4 characters).
+</ParamField>
+
+<ParamField path="opts" type="keyword()" default="[]">
+  Options:
+  - `project_path: String.t()` - Project root (defaults to `File.cwd!()`)
+</ParamField>
+
+<ResponseField name="context" type="String.t()">
+  Markdown-formatted context string containing:
+  - High-relevance files: Full file content
+  - Medium-relevance files: Symbol listings only
+  - Low-relevance files: Just filenames
+</ResponseField>
+
+<Info>
+The packer intelligently adjusts content depth based on relevance score and remaining token budget:
+- Score ≥ 100: Full file content
+- Score ≥ 10: Symbols only
+- Score < 10: Filename only
+</Info>
+
+## Tree-Sitter Integration
+
+The `Loom.RepoIntel.TreeSitter` module provides advanced symbol extraction using the tree-sitter CLI.
+
+### available?/0
+
+Check if tree-sitter CLI is installed.
+
+```elixir
+if Loom.RepoIntel.TreeSitter.available?() do
+  IO.puts("tree-sitter is available")
+end
+```
+
+### extract_symbols/1
+
+Extract symbols using tree-sitter with caching.
+
+```elixir
+symbols = Loom.RepoIntel.TreeSitter.extract_symbols("lib/my_module.ex")
+# Results are cached by file path and mtime
+```
+
+### extract_with_cli/2
+
+Extract symbols directly using tree-sitter CLI (no caching).
+
+```elixir
+symbols = Loom.RepoIntel.TreeSitter.extract_with_cli(
+  "src/app.ts",
+  :typescript
+)
+```
+
+### extract_with_regex/2
+
+Extract symbols using enhanced regex patterns.
+
+```elixir
+symbols = Loom.RepoIntel.TreeSitter.extract_with_regex(
+  "lib/accounts.ex",
+  :elixir
+)
+```
+
+### clear_cache/0
+
+Clear the symbol extraction cache.
+
+```elixir
+:ok = Loom.RepoIntel.TreeSitter.clear_cache()
+```
+
+### init_cache/0
+
+Initialize the ETS cache table (called automatically on boot).
+
+```elixir
+:ok = Loom.RepoIntel.TreeSitter.init_cache()
+```
+
+## Supported Languages
+
+### Symbol Extraction Support
+
+| Language | Tree-Sitter | Regex | Symbols Extracted |
+|----------|-------------|-------|-------------------|
+| Elixir | ✓ | ✓ | modules, functions, macros, types, specs, structs |
+| JavaScript | ✓ | ✓ | functions, classes, constants, interfaces |
+| TypeScript | ✓ | ✓ | functions, classes, interfaces, types, enums |
+| Python | ✓ | ✓ | classes, functions, constants |
+| Go | ✓ | ✓ | functions, methods, structs, interfaces, types |
+| Rust | ✓ | ✓ | functions, structs, enums, traits, impls, modules |
+| Ruby | ✓ | ✓ | classes, modules, methods, attributes |
+
+## Complete Example
+
+```elixir
+alias Loom.RepoIntel.{Index, RepoMap, ContextPacker}
+
+# Set up the index
+Index.set_project("/workspace/my-elixir-app")
+Index.build()
+
+# Get repository statistics
+stats = Index.stats()
+IO.puts("Indexed #{stats.total_files} files")
+IO.inspect(stats.by_language, label: "Languages")
+
+# Find all Elixir files in lib/
+lib_files = Index.list_files(
+  language: :elixir,
+  pattern: "lib/**/*.ex"
+)
+
+IO.puts("Found #{length(lib_files)} library files")
+
+# Extract symbols from a specific file
+symbols = RepoMap.extract_symbols("lib/my_app/accounts.ex")
+
+Enum.each(symbols, fn sym ->
+  sig = if sym.signature, do: " #{sym.signature}", else: ""
+  IO.puts("  #{sym.type}: #{sym.name}#{sig} (line #{sym.line})")
+end)
+
+# Generate a focused repo map
+{:ok, repo_map} = RepoMap.generate(
+  "/workspace/my-elixir-app",
+  max_tokens: 4096,
+  mentioned_files: ["lib/my_app/auth.ex", "lib/my_app/accounts.ex"],
+  keywords: ["authentication", "user", "session"]
+)
+
+File.write!("repo_map.md", repo_map)
+
+# Pack context for AI assistant
+all_files = Index.list_files()
+ranked = RepoMap.rank_files(all_files,
+  mentioned_files: ["lib/my_app/router.ex"],
+  keywords: ["api", "endpoint"]
+)
+
+context = ContextPacker.pack(ranked, 8192,
+  project_path: "/workspace/my-elixir-app"
+)
+
+IO.puts("Generated #{byte_size(context)} bytes of context")
+
+# Incremental refresh after changes
+File.write!("lib/my_app/new_file.ex", "defmodule MyApp.New do\nend")
+Index.refresh()
+
+{:ok, new_meta} = Index.lookup("lib/my_app/new_file.ex")
+IO.inspect(new_meta, label: "New file metadata")
+```
+
+## Performance Tips
+
+<Tip>
+1. Use `refresh/1` instead of `build/1` for incremental updates
+2. Tree-sitter provides better accuracy than regex - install the CLI for best results
+3. Symbol extraction results are cached by file mtime - no need to manually cache
+4. The ETS index provides O(1) lookup performance
+5. Use filters in `list_files/1` to reduce the dataset before ranking
+</Tip>
+
+## Type Specifications
+
+```elixir
+# File metadata
+@type file_meta :: %{
+  mtime: NaiveDateTime.t(),
+  size: integer(),
+  type: :file,
+  language: atom()
+}
+
+# Symbol map
+@type symbol :: %{
+  name: String.t(),
+  type: atom(),
+  line: integer(),
+  signature: String.t() | nil
+}
+
+# Ranked file entry
+@type ranked_file :: {path :: String.t(), meta :: file_meta(), score :: number()}
+```

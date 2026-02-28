@@ -1,0 +1,511 @@
+---
+title: Sub-Agents
+description: Spawn lightweight read-only agents for parallel codebase exploration
+---
+
+Sub-agents are lightweight, read-only agents that Loom can spawn to explore the codebase in parallel. They use the "weak" model (fast and cheap) to search for information without blocking the main agent.
+
+## What Are Sub-Agents?
+
+A sub-agent is a temporary agent with:
+
+- **Read-only access** - Can search, read files, and list directories
+- **Weak model** - Uses the fast, cheap model from your config
+- **Scoped search** - Operates within a specified directory scope
+- **Isolated execution** - Runs in its own process, doesn't affect main session
+- **Time-bounded** - Maximum 10 iterations before automatic termination
+
+## When to Use Sub-Agents
+
+Sub-agents are ideal for exploratory tasks:
+
+<AccordionGroup>
+  <Accordion title="Finding Usage Patterns">
+    "Where is the User schema used in the codebase?"
+    
+    A sub-agent searches for references and summarizes usage patterns.
+  </Accordion>
+  
+  <Accordion title="Understanding Conventions">
+    "How are controllers typically structured in this project?"
+    
+    A sub-agent examines multiple controller files and extracts common patterns.
+  </Accordion>
+  
+  <Accordion title="Locating Implementation Details">
+    "How does authentication work in this app?"
+    
+    A sub-agent traces through auth-related modules to build a summary.
+  </Accordion>
+  
+  <Accordion title="Dependency Analysis">
+    "What modules depend on the Accounts context?"
+    
+    A sub-agent searches for imports and function calls.
+  </Accordion>
+</AccordionGroup>
+
+## How to Use Sub-Agents
+
+### Automatic Invocation
+
+The main agent can automatically spawn sub-agents when it recognizes an exploratory task:
+
+```
+You: How is error handling done in this codebase?
+
+Loom: Let me search the codebase for error handling patterns...
+      [spawns sub-agent]
+      
+      Found consistent error handling:
+      - Controllers use {:ok, _} | {:error, _} tuples
+      - Contexts return Ecto.Changeset for validation errors
+      - Phoenix.Controller.action_fallback handles errors
+      - Custom MyAppWeb.ErrorHelpers formats error messages
+```
+
+### Explicit Invocation
+
+You can explicitly request a sub-agent search:
+
+```
+You: Use a sub-agent to find all files that import the Repo module.
+
+Loom: [spawns sub-agent scoped to lib/]
+      
+      Found 23 files importing Repo:
+      - lib/myapp/accounts.ex
+      - lib/myapp/accounts/user.ex
+      - lib/myapp/content.ex
+      ...
+```
+
+### Programmatic Usage
+
+Call the sub-agent tool directly:
+
+```elixir
+context = %{project_path: "/path/to/project"}
+params = %{
+  task: "Find all modules that use GenServer",
+  scope: "lib/myapp"  # Optional: defaults to project root
+}
+
+{:ok, %{result: findings}} = Loom.Tools.SubAgent.run(params, context)
+IO.puts(findings)
+```
+
+## Sub-Agent Workflow
+
+When a sub-agent is spawned:
+
+<Steps>
+  <Step title="Initialize with Task">
+    The sub-agent receives a task description and scope directory.
+  </Step>
+  <Step title="Plan Search Strategy">
+    The weak model decides which tools to use (file_search, content_search, etc.).
+  </Step>
+  <Step title="Execute Searches">
+    The sub-agent runs read-only tools to gather information.
+  </Step>
+  <Step title="Synthesize Findings">
+    After exploring, the sub-agent summarizes its findings.
+  </Step>
+  <Step title="Return to Main Agent">
+    The summary is returned as a tool result to the main agent.
+  </Step>
+</Steps>
+
+## Available Tools
+
+Sub-agents have access to four read-only tools:
+
+### file_read
+
+Read file contents:
+
+```elixir
+%{file_path: "lib/myapp/accounts/user.ex"}
+```
+
+### file_search
+
+Find files matching a glob pattern:
+
+```elixir
+%{pattern: "**/*_controller.ex"}
+```
+
+### content_search
+
+Search file contents with regex:
+
+```elixir
+%{
+  pattern: "use GenServer",
+  file_pattern: "**/*.ex"  # Optional: filter files
+}
+```
+
+### directory_list
+
+List directory contents:
+
+```elixir
+%{path: "lib/myapp/accounts"}
+```
+
+<Warning>
+Sub-agents **cannot** use write tools (`file_write`, `file_edit`), shell commands, or git operations. They are strictly read-only.
+</Warning>
+
+## Scoping Sub-Agents
+
+By default, sub-agents search the entire project. Use the `scope` parameter to restrict the search space:
+
+<Tabs>
+  <Tab title="Full Project">
+    ```elixir
+    %{
+      task: "Find all schemas"
+      # scope defaults to project_path
+    }
+    ```
+    
+    Searches the entire project.
+  </Tab>
+  
+  <Tab title="Specific Directory">
+    ```elixir
+    %{
+      task: "Find all schemas",
+      scope: "lib/myapp"  # Relative path
+    }
+    ```
+    
+    Only searches `lib/myapp/` and subdirectories.
+  </Tab>
+  
+  <Tab title="Subsystem">
+    ```elixir
+    %{
+      task: "How are tests structured?",
+      scope: "test/myapp_web/controllers"
+    }
+    ```
+    
+    Focuses on a specific subsystem.
+  </Tab>
+</Tabs>
+
+<Tip>
+**Performance tip:** Narrow the scope when searching large codebases. Instead of searching all of `lib/`, scope to `lib/myapp/accounts` if you know what you're looking for.
+</Tip>
+
+## Configuration
+
+### Weak Model Selection
+
+Sub-agents use the "weak" model from your config:
+
+```toml .loom.toml
+[model]
+weak = "anthropic:claude-haiku-4-5"  # Fast and cheap
+```
+
+Good weak model choices:
+- **Claude Haiku 4-5** - Fastest Anthropic model, excellent for search
+- **GPT-3.5 Turbo** - Fast, cheap, good reading comprehension
+- **Groq LLaMA 3 8B** - Free tier, very fast inference
+
+<Warning>
+Don't use expensive models (Opus, GPT-4) as the weak model. Sub-agents may spawn multiple times per session, increasing costs significantly.
+</Warning>
+
+### Iteration Limit
+
+Sub-agents are limited to 10 tool call iterations to prevent runaway searches:
+
+```elixir
+# In lib/loom/tools/sub_agent.ex
+@max_iterations 10
+```
+
+If a sub-agent hits this limit, it returns what it found so far.
+
+## Example: Finding a Feature
+
+### User Request
+
+```
+You: How does the notification system work in this app?
+```
+
+### Main Agent Response
+
+```
+Loom: I'll search for notification-related code.
+      [spawns sub-agent with task: "Find and explain notification system"]
+```
+
+### Sub-Agent Execution
+
+<Steps>
+  <Step title="Search for Files">
+    ```elixir
+    file_search(pattern: "**/*notification*")
+    ```
+    
+    Finds:
+    - `lib/myapp/notifications.ex`
+    - `lib/myapp/notifications/email.ex`
+    - `lib/myapp_web/live/notifications_live.ex`
+  </Step>
+  
+  <Step title="Read Key Files">
+    ```elixir
+    file_read(file_path: "lib/myapp/notifications.ex")
+    ```
+    
+    Reads the main notification context module.
+  </Step>
+  
+  <Step title="Search for Usage">
+    ```elixir
+    content_search(pattern: "Notifications\\.send")
+    ```
+    
+    Finds callers of notification functions.
+  </Step>
+  
+  <Step title="Synthesize Summary">
+    Returns:
+    
+    ```
+    The notification system is implemented in lib/myapp/notifications.ex.
+    It provides:
+    - Email notifications via lib/myapp/notifications/email.ex (uses Bamboo)
+    - In-app notifications via Phoenix PubSub
+    - Notification preferences stored in users.notification_settings (jsonb)
+    
+    Called from:
+    - Order creation (sends order confirmation)
+    - User registration (sends welcome email)
+    - Payment events (sends receipts)
+    ```
+  </Step>
+</Steps>
+
+### Final Output
+
+```
+Loom: The notification system is implemented in lib/myapp/notifications.ex.
+      It provides email notifications via Bamboo and in-app notifications
+      via Phoenix PubSub. Preferences are stored in users.notification_settings.
+      
+      Key entry points:
+      - Notifications.send_email/2
+      - Notifications.broadcast/2
+      
+      Would you like me to show you the implementation of any specific part?
+```
+
+## Performance Considerations
+
+### Cost
+
+Sub-agents use the weak model, so they're cheap:
+
+- **Claude Haiku**: ~$0.25 per million input tokens
+- **GPT-3.5 Turbo**: ~$0.50 per million input tokens
+
+A typical sub-agent search costs **$0.01-0.05** depending on codebase size.
+
+### Speed
+
+Sub-agents run in parallel with the main agent (technically sequential in current implementation, but async support planned):
+
+- **Single search**: 2-5 seconds
+- **Complex multi-step search**: 10-15 seconds
+
+### Memory
+
+Each sub-agent runs in its own process and is garbage collected after completion. Minimal memory overhead.
+
+## Implementation Details
+
+Sub-agents are implemented in `lib/loom/tools/sub_agent.ex`:
+
+```elixir
+defmodule Loom.Tools.SubAgent do
+  use Jido.Action,
+    name: "sub_agent",
+    description: "Spawn a read-only search sub-agent",
+    schema: [
+      task: [type: :string, required: true],
+      scope: [type: :string]
+    ]
+  
+  @max_iterations 10
+  
+  @read_only_tools [
+    Loom.Tools.FileRead,
+    Loom.Tools.FileSearch,
+    Loom.Tools.ContentSearch,
+    Loom.Tools.DirectoryList
+  ]
+  
+  def run(params, context) do
+    task = param!(params, :task)
+    scope = param(params, :scope, context.project_path)
+    model = weak_model()
+    
+    # Build system prompt
+    system_prompt = """
+    You are a search assistant working in #{scope}.
+    Find information about: #{task}
+    Use available tools to search files and code.
+    When done, respond with your findings.
+    """
+    
+    # Run search loop
+    case run_sub_loop(messages, tool_defs, model, scope, 0) do
+      {:ok, answer} -> {:ok, %{result: answer}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+end
+```
+
+See `lib/loom/tools/sub_agent.ex:1` for the full implementation.
+
+## Limitations
+
+### No State Persistence
+
+Sub-agents don't save their findings to the decision graph or conversation history. They return a summary and terminate.
+
+### Sequential Execution
+
+Currently, sub-agents run sequentially. Parallel sub-agent execution (true agent swarms) is planned for Phase 5.
+
+### Read-Only
+
+Sub-agents can't make changes. If they discover an issue, the main agent must handle the fix.
+
+### Fixed Tool Set
+
+Sub-agents can't use custom tools or MCP servers (coming in Phase 4).
+
+## Best Practices
+
+### Use for Broad Searches
+
+Sub-agents excel at answering "where" and "how" questions:
+
+<CodeGroup>
+```markdown ✅ Good Use Cases
+- Where is error handling done?
+- How are controllers structured?
+- Find all usages of the User schema
+- What database migrations exist?
+```
+
+```markdown ❌ Poor Use Cases
+- Fix all linting errors (needs write access)
+- Explain this specific function (just read the file directly)
+- Run the test suite (needs shell access)
+```
+</CodeGroup>
+
+### Scope Appropriately
+
+Narrow scopes are faster and more focused:
+
+```elixir
+# ❌ Too broad
+%{task: "Find authentication logic"}  # Searches entire project
+
+# ✅ Appropriately scoped
+%{task: "Find authentication logic", scope: "lib/myapp/accounts"}
+```
+
+### Trust the Summary
+
+Sub-agents synthesize findings into concise summaries. Don't re-search manually—trust the summary and ask follow-up questions if needed.
+
+### Combine with Main Agent
+
+Use sub-agents for discovery, then switch to the main agent for action:
+
+```
+1. Sub-agent: "Find all places where User.changeset is called"
+2. Main agent: "Update all those call sites to use the new validate_user/1 function"
+```
+
+## Future Enhancements
+
+### Parallel Sub-Agents
+
+Spawn multiple sub-agents simultaneously for faster exploration:
+
+```elixir
+Task.async_stream(queries, fn query ->
+  Loom.Tools.SubAgent.run(%{task: query}, context)
+end)
+```
+
+### Persistent Sub-Agents
+
+Keep sub-agents alive across multiple queries for conversational exploration.
+
+### Custom Tool Sets
+
+Allow sub-agents to use MCP tools or custom tool modules.
+
+### Sub-Agent Swarms
+
+Coordinate multiple sub-agents via OTP message passing for complex investigations.
+
+## Troubleshooting
+
+### Sub-Agent Returns Empty Results
+
+**Cause:** The search scope was too narrow or the pattern didn't match.
+
+**Solution:**
+1. Widen the scope: `scope: "lib"` instead of `scope: "lib/myapp/accounts"`
+2. Try different search terms
+3. Ask the main agent to refine the query
+
+### Sub-Agent Exceeds Iteration Limit
+
+**Issue:** Error: `Sub-agent exceeded maximum iterations (10)`
+
+**Cause:** The task was too complex or the model got stuck in a loop.
+
+**Solution:**
+1. Break the task into smaller pieces
+2. Narrow the scope
+3. Try a stronger weak model (Haiku → Sonnet)
+
+### Sub-Agent Slow to Respond
+
+**Cause:** Large codebase, complex regex patterns, or slow model.
+
+**Solution:**
+1. Narrow the scope: `scope: "lib/myapp"` instead of entire project
+2. Use a faster weak model (Groq, GPT-3.5)
+3. Simplify the search task
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architect Mode" icon="compass" href="/guides/architect-mode">
+    Use two-model workflows for complex changes
+  </Card>
+  <Card title="Project Rules" icon="book" href="/guides/project-rules">
+    Define project-specific instructions and constraints
+  </Card>
+</CardGroup>

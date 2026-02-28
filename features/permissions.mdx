@@ -1,0 +1,420 @@
+---
+title: "Permission System"
+description: "Control what Loom can do with granular security policies"
+icon: "shield"
+---
+
+Loom's permission system ensures the AI can't perform destructive operations without your approval. Configure auto-approve lists, session-based grants, and per-tool policies.
+
+## Overview
+
+The permission manager categorizes tools and enforces access control:
+
+<CardGroup cols={3}>
+  <Card title="Read" icon="eye" color="#10b981">
+    Safe, read-only operations always allowed by default
+  </Card>
+  
+  <Card title="Write" icon="pen" color="#f59e0b">
+    File modifications require permission
+  </Card>
+  
+  <Card title="Execute" icon="terminal" color="#ef4444">
+    Shell commands require explicit approval
+  </Card>
+</CardGroup>
+
+## Tool Categories
+
+### Read Tools (Auto-Approved)
+
+These tools are typically safe and auto-approved:
+
+- `file_read`
+- `file_search`
+- `content_search`
+- `directory_list`
+
+<Check>No permission prompts for read operations</Check>
+
+### Write Tools (Require Permission)
+
+These tools modify files:
+
+- `file_write`
+- `file_edit`
+
+<Warning>User approval required unless explicitly granted</Warning>
+
+### Execute Tools (Require Permission)
+
+These tools run commands:
+
+- `shell`
+- `git`
+
+<Warning>Potentially dangerous - always requires approval unless granted</Warning>
+
+## Permission Checks
+
+When a tool is invoked, Loom checks:
+
+<Steps>
+  <Step title="Auto-Approve List">
+    Is the tool in the `auto_approve` list from config?
+    
+    If yes → **Allow immediately**
+  </Step>
+  
+  <Step title="Existing Grant">
+    Has the user granted permission for this tool in this session?
+    
+    If yes → **Allow immediately**
+  </Step>
+  
+  <Step title="Ask User">
+    Neither auto-approved nor granted?
+    
+    → **Show permission prompt**
+  </Step>
+</Steps>
+
+## Configuration
+
+### Auto-Approve List
+
+Set tools to auto-approve in `.loom.toml`:
+
+```toml
+[permissions]
+auto_approve = [
+  "file_read",
+  "file_search",
+  "content_search",
+  "directory_list"
+]
+```
+
+These tools will never prompt for permission.
+
+### Default Configuration
+
+If no config is provided, read tools are auto-approved:
+
+```elixir
+default_auto_approve = [
+  "file_read",
+  "file_search",
+  "content_search",
+  "directory_list"
+]
+```
+
+## Permission Prompts
+
+### CLI Prompt
+
+In the terminal, you'll see:
+
+```
+[file_edit] wants to: write to src/user.ex
+
+[y]es / [n]o / [a]lways for this session:
+```
+
+<ResponseField name="y (yes)">
+  Allow this one operation
+</ResponseField>
+
+<ResponseField name="n (no)">
+  Deny this operation - Loom will continue without it
+</ResponseField>
+
+<ResponseField name="a (always)">
+  Grant permission for all invocations of this tool in this session
+</ResponseField>
+
+### Web UI Modal
+
+In the browser, a modal dialog appears:
+
+```
+Permission Required
+
+Allow file_edit on src/user.ex?
+
+[Deny] [Allow Once] [Allow Always]
+```
+
+<ResponseField name="Deny">
+  Reject this operation
+</ResponseField>
+
+<ResponseField name="Allow Once">
+  Approve this single operation
+</ResponseField>
+
+<ResponseField name="Allow Always">
+  Auto-approve all operations of this tool type for the session
+</ResponseField>
+
+## Session Grants
+
+When you choose "Always" or "Allow Always", a grant is stored:
+
+```elixir
+%PermissionGrant{
+  tool: "file_edit",
+  scope: "*",  # or specific path
+  session_id: "abc123...",
+  granted_at: ~U[2026-02-28 10:30:00Z]
+}
+```
+
+### Grant Scope
+
+Grants can be:
+
+- **Tool-wide** (`scope: "*"`): Applies to all uses of this tool
+- **Path-specific** (`scope: "lib/core/user.ex"`): Only for specific file
+
+<Info>
+  Currently, grants are tool-wide. Path-specific grants are planned for future releases.
+</Info>
+
+### Grant Duration
+
+Grants last for:
+- **Session lifetime**: While the session is active
+- **Not persisted**: Grants are cleared when session ends
+
+<Tip>
+  For fully automated workflows, use `--yes` flag or add tools to `auto_approve` list.
+</Tip>
+
+## Auto-Approve Mode
+
+### CLI: `--yes` Flag
+
+Skip all permission prompts:
+
+```bash
+loom --yes "refactor the authentication module"
+```
+
+All tools will be auto-approved for this session.
+
+<Warning>
+  Use with caution! Loom will be able to:
+  - Write and modify files
+  - Execute shell commands
+  - Run git operations
+  
+  Only use in trusted environments or for non-critical tasks.
+</Warning>
+
+### Web UI: Auto-Approve Session
+
+Once you click "Allow Always" for a tool, it's auto-approved for the rest of the session.
+
+To reset:
+- Start a new session
+- Refresh the page
+
+## Permission Manager API
+
+### Check Permission
+
+```elixir
+Loom.Permissions.Manager.check("file_edit", "lib/user.ex", session_id)
+# Returns: :allowed | :denied | :ask
+```
+
+### Grant Permission
+
+```elixir
+Loom.Permissions.Manager.grant("shell", "*", session_id)
+# Stores grant in database
+```
+
+### Check If Auto-Approved
+
+```elixir
+Loom.Permissions.Manager.is_auto_approved?("file_read")
+# Returns: true | false
+```
+
+### Get Tool Category
+
+```elixir
+Loom.Permissions.Manager.tool_category("file_edit")
+# Returns: :write
+
+Loom.Permissions.Manager.tool_category("shell")
+# Returns: :execute
+```
+
+## Security Best Practices
+
+<Tip>
+  **Start Restrictive**: Only auto-approve read tools initially. Grant write/execute permissions as needed.
+</Tip>
+
+<Tip>
+  **Review Prompts**: Read what Loom wants to do before approving. Check file paths and command arguments.
+</Tip>
+
+<Tip>
+  **Use Sessions**: Grants are session-scoped. Start fresh sessions for different tasks to limit scope.
+</Tip>
+
+<Warning>
+  **Avoid `--yes` in Production**: Never use auto-approve mode on production codebases or critical projects.
+</Warning>
+
+## Permission Workflow Example
+
+<Steps>
+  <Step title="User Request">
+    You ask Loom: "Add error handling to user_controller.ex"
+  </Step>
+  
+  <Step title="Loom Plans">
+    AI decides it needs to:
+    1. Read user_controller.ex (auto-approved ✓)
+    2. Edit user_controller.ex (requires permission)
+  </Step>
+  
+  <Step title="Permission Prompt">
+    Loom shows:
+    ```
+    [file_edit] wants to: write to lib/user_controller.ex
+    
+    [y]es / [n]o / [a]lways:
+    ```
+  </Step>
+  
+  <Step title="User Approves">
+    You type: `y`
+    
+    Loom proceeds with the edit.
+  </Step>
+  
+  <Step title="Follow-up Edit">
+    AI wants to edit the same file again.
+    
+    If you chose `a` (always), no new prompt.
+    If you chose `y` (yes), another prompt appears.
+  </Step>
+</Steps>
+
+## Handling Denials
+
+When you deny a permission:
+
+1. **Loom receives denial**: Tool returns error
+2. **AI adjusts**: May:
+   - Explain what it wanted to do
+   - Ask for clarification
+   - Suggest manual steps
+   - Continue with read-only analysis
+
+<Info>
+  Denying permissions doesn't end the session. Loom will work within the constraints you set.
+</Info>
+
+## Database Schema
+
+Permission grants are stored in the database:
+
+```sql
+CREATE TABLE permission_grants (
+  id UUID PRIMARY KEY,
+  tool VARCHAR NOT NULL,
+  scope VARCHAR NOT NULL,
+  session_id UUID NOT NULL,
+  granted_at TIMESTAMP NOT NULL
+);
+```
+
+Query grants:
+```elixir
+import Ecto.Query
+
+from g in PermissionGrant,
+  where: g.session_id == ^session_id,
+  where: g.tool == ^tool_name
+```
+
+## Custom Permission Policies
+
+You can extend the permission system:
+
+```elixir
+defmodule MyApp.CustomPermissions do
+  def check_custom_policy(tool_name, path, session_id) do
+    case tool_name do
+      "shell" ->
+        # Only allow safe commands
+        if safe_command?(path), do: :allowed, else: :ask
+        
+      "file_write" ->
+        # Only allow writes to specific directories
+        if writable_dir?(path), do: :allowed, else: :denied
+        
+      _ ->
+        # Delegate to default policy
+        Loom.Permissions.Manager.check(tool_name, path, session_id)
+    end
+  end
+end
+```
+
+## Future Enhancements
+
+<Card title="Planned Features" icon="rocket">
+  - **Path-specific grants**: "Allow file_edit only in lib/core/"
+  - **Time-limited grants**: "Auto-approve for 1 hour"
+  - **Audit log**: Track all permission requests and grants
+  - **Team policies**: Shared permission rules across team
+  - **Dry-run mode**: See what Loom would do without executing
+</Card>
+
+## Troubleshooting
+
+### Too Many Prompts
+
+**Solution**: Add tools to `auto_approve` list or use "Always" in prompts.
+
+### Accidentally Granted Permission
+
+**Solution**: Start a new session to reset all grants.
+
+### Config Not Loading
+
+**Solution**: Ensure `.loom.toml` is in project root and formatted correctly:
+
+```toml
+[permissions]
+auto_approve = ["file_read", "content_search"]
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Learn about all available tools and their categories
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Configure Loom's behavior and policies
+  </Card>
+  
+  <Card title="CLI" icon="terminal" href="/features/cli">
+    Use permission flags in command-line mode
+  </Card>
+  
+  <Card title="Web UI" icon="browser" href="/features/web-ui">
+    Manage permissions in the visual interface
+  </Card>
+</CardGroup>

@@ -1,0 +1,326 @@
+---
+title: 'Building Loom'
+description: 'Build Loom from source as an escript CLI, OTP release, or standalone binary'
+---
+
+## Prerequisites
+
+- **Elixir 1.18+** with OTP 27
+- **Erlang/OTP 27+**
+- **SQLite** (automatically included)
+- An API key for at least one LLM provider (Anthropic, OpenAI, Google, etc.)
+
+## Quick Start
+
+```bash
+git clone https://github.com/yourusername/loom.git
+cd loom
+
+# Install dependencies and set up database
+mix setup
+
+# Build the CLI escript
+mix escript.build
+
+# Start the web UI (optional)
+mix phx.server
+```
+
+## Build Targets
+
+Loom supports three build modes:
+
+1. **Escript CLI** — Single executable that requires Elixir/Erlang installed
+2. **OTP Release** — Standard Mix release for deployment
+3. **Standalone Binary** — Self-contained binary with embedded BEAM runtime (via Burrito)
+
+## Building the Escript
+
+The escript is the simplest way to run Loom's CLI:
+
+```bash
+mix escript.build
+```
+
+This creates `./loom` in the project root. The escript:
+
+- Entry point: `LoomCli.Main`
+- Requires Elixir/Erlang installed on target system
+- Database stored at `~/.loom/loom.db`
+- Ideal for development and local use
+
+### Running the Escript
+
+```bash
+# Interactive REPL in current directory
+./loom --project .
+
+# One-shot query
+./loom --project . "What does the auth module do?"
+
+# Specify model
+./loom --model anthropic:claude-sonnet-4-6 --project .
+
+# Resume previous session
+./loom --resume <session-id> --project .
+```
+
+## Building an OTP Release
+
+For server deployment without the Burrito wrapper:
+
+```bash
+# Comment out Burrito steps in mix.exs releases config first
+MIX_ENV=prod mix release loom
+```
+
+The release will be in `_build/prod/rel/loom/`.
+
+### Running the Release
+
+```bash
+# Start the application (includes web UI)
+_build/prod/rel/loom/bin/loom start
+
+# Run in foreground
+_build/prod/rel/loom/bin/loom foreground
+
+# Run migrations manually
+_build/prod/rel/loom/bin/loom eval "Loom.Release.migrate()"
+
+# Remote console
+_build/prod/rel/loom/bin/loom remote
+```
+
+## Building a Standalone Binary
+
+Loom uses [Burrito](https://github.com/burrito-elixir/burrito) to create self-contained binaries that bundle the BEAM runtime. Users don't need Elixir or Erlang installed.
+
+### Configuration
+
+The release configuration in `mix.exs`:
+
+```elixir
+defp releases do
+  [
+    loom: [
+      steps: [:assemble, &Burrito.wrap/1],
+      burrito: [
+        targets: [
+          macos_aarch64: [os: :darwin, cpu: :aarch64],   # Apple Silicon
+          macos_x86_64: [os: :darwin, cpu: :x86_64],     # Intel Mac
+          linux_x86_64: [os: :linux, cpu: :x86_64],      # Linux x86_64
+          linux_aarch64: [os: :linux, cpu: :aarch64]     # Linux ARM64
+        ]
+      ],
+      applications: [runtime_tools: :permanent],
+      cookie: "loom_0.1.0"
+    ]
+  ]
+end
+```
+
+### Build for Current Platform
+
+```bash
+MIX_ENV=prod mix release loom
+```
+
+Output: `burrito_out/loom_<os>_<arch>`
+
+### Cross-Platform Builds
+
+Burrito supports cross-compilation for all configured targets:
+
+```bash
+MIX_ENV=prod mix release loom
+```
+
+Generates binaries for:
+- `burrito_out/loom_macos_aarch64` (Apple Silicon)
+- `burrito_out/loom_macos_x86_64` (Intel Mac)
+- `burrito_out/loom_linux_x86_64`
+- `burrito_out/loom_linux_aarch64`
+
+### Binary Behavior
+
+The standalone binary:
+- Includes the BEAM VM, Elixir, and all dependencies
+- Database stored at `~/.loom/loom.db` (override with `LOOM_DB_PATH`)
+- Runs migrations automatically on first start
+- Starts web UI on port 4200 (override with `PORT`)
+- Derives `SECRET_KEY_BASE` from home directory (override with env var)
+
+## Database Setup
+
+Loom uses SQLite via Ecto for storage.
+
+### Automatic Setup
+
+```bash
+mix setup
+```
+
+This runs:
+1. `mix deps.get` — Install dependencies
+2. `mix ecto.create` — Create database file
+3. `mix ecto.migrate` — Run migrations
+
+### Manual Setup
+
+```bash
+mix deps.get
+mix ecto.create
+mix ecto.migrate
+```
+
+### Database Location
+
+- **Development**: `.loom/loom.db` (relative to project root)
+- **Production**: `~/.loom/loom.db`
+- **Custom**: Set `LOOM_DB_PATH` environment variable
+
+### Migrations
+
+Loom includes 5 core migrations:
+
+```
+20260227000001_create_sessions.exs       # Session persistence
+20260227000002_create_messages.exs       # Conversation history
+20260227000003_create_decision_nodes.exs # Decision graph nodes
+20260227000004_create_decision_edges.exs # Decision graph edges
+20260227000005_create_permission_grants.exs # Permission system
+```
+
+Migrations run automatically in release mode via `Loom.Application.start/2`.
+
+## Release Configuration
+
+The `Loom.Release` module handles release-time operations:
+
+```elixir
+defmodule Loom.Release do
+  @moduledoc """
+  Release-time tasks for Loom.
+  """
+
+  def create_db do
+    # Ensures ~/.loom/ directory and database file exist
+  end
+
+  def migrate do
+    # Runs all pending Ecto migrations
+  end
+
+  def rollback(repo, version) do
+    # Rolls back to specific migration version
+  end
+
+  def db_path do
+    # Returns configured database path
+  end
+end
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOOM_DB_PATH` | `~/.loom/loom.db` | Database file location |
+| `PORT` | `4200` | Web UI port |
+| `SECRET_KEY_BASE` | (derived) | Phoenix secret key |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key |
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `GOOGLE_API_KEY` | — | Google AI API key |
+
+## Development Build
+
+For active development with hot code reloading:
+
+```bash
+# Install dependencies
+mix deps.get
+
+# Set up database
+mix ecto.setup
+
+# Start Phoenix server with live reload
+mix phx.server
+
+# Or start in IEx
+iex -S mix phx.server
+```
+
+The development server:
+- Watches for file changes and reloads code automatically
+- Includes Phoenix LiveReload for browser refresh
+- Enables LiveDashboard at `http://localhost:4200/dashboard`
+- Shows verbose logging
+
+## Asset Compilation
+
+Loom uses esbuild and Tailwind CSS for frontend assets.
+
+### Build Assets Once
+
+```bash
+mix assets.deploy
+```
+
+### Watch Mode (Development)
+
+Assets compile automatically when running `mix phx.server`. To compile manually:
+
+```bash
+mix esbuild loom
+mix tailwind loom
+```
+
+## Troubleshooting
+
+### Escript Won't Run
+
+```bash
+# Ensure escript is executable
+chmod +x ./loom
+
+# Check Elixir version
+elixir --version
+```
+
+### Database Locked
+
+```bash
+# Stop any running Loom processes
+pkill -f loom
+
+# Check for stale locks
+lsof ~/.loom/loom.db
+```
+
+### Burrito Build Fails
+
+```bash
+# Clean build artifacts
+mix clean
+rm -rf _build burrito_out
+
+# Rebuild
+MIX_ENV=prod mix deps.get
+MIX_ENV=prod mix release loom
+```
+
+### Missing Dependencies
+
+```bash
+# Force dependency update
+mix deps.clean --all
+mix deps.get
+mix deps.compile
+```
+
+## Next Steps
+
+- [Deployment Guide](/advanced/deployment) — Deploy Loom to production
+- [Release Configuration](/advanced/releases) — Customize release behavior
+- [Architecture Deep Dive](/advanced/architecture-deep-dive) — Understand Loom's internals

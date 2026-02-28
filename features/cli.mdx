@@ -1,0 +1,340 @@
+---
+title: "Command Line Interface"
+description: "Use Loom from the terminal with the powerful CLI"
+icon: "terminal"
+---
+
+The Loom CLI provides a fast, terminal-native way to interact with Loom's AI coding assistant. Work directly from your command line with both interactive and one-shot modes.
+
+## Getting Started
+
+Start an interactive session in your project directory:
+
+```bash
+loom
+```
+
+Or run a single command:
+
+```bash
+loom "explain this codebase"
+```
+
+## Command Options
+
+<ParamField path="--model" type="string" default="from config">
+  Specify which model to use for the session
+  
+  ```bash
+  loom -m anthropic:claude-opus-4-6 "refactor this module"
+  ```
+</ParamField>
+
+<ParamField path="--project" type="string" default="current directory">
+  Set the project path to work in
+  
+  ```bash
+  loom -p ~/projects/myapp "add tests"
+  ```
+</ParamField>
+
+<ParamField path="--yes" type="boolean" default="false">
+  Auto-approve all permission prompts (use with caution)
+  
+  ```bash
+  loom -y "update dependencies"
+  ```
+</ParamField>
+
+<ParamField path="--resume" type="string">
+  Resume a previous session by ID
+  
+  ```bash
+  loom -r abc123
+  ```
+</ParamField>
+
+<ParamField path="--help" type="boolean">
+  Display help information
+</ParamField>
+
+<ParamField path="--version" type="boolean">
+  Show the Loom version
+</ParamField>
+
+## Interactive Mode
+
+When you run `loom` without a prompt, you enter an interactive REPL session:
+
+<Steps>
+  <Step title="Start Session">
+    Launch Loom in your project directory:
+    ```bash
+    cd ~/projects/myapp
+    loom
+    ```
+    
+    You'll see the session start with your configured model.
+  </Step>
+  
+  <Step title="Chat with Loom">
+    Type your questions or commands at the `loom>` prompt:
+    ```
+    loom> explain the authentication flow
+    loom> add error handling to user_controller.ex
+    loom> what tests are missing?
+    ```
+  </Step>
+  
+  <Step title="Use Session Commands">
+    Control your session with slash commands:
+    - `/help` - Show available commands
+    - `/history` - View conversation history
+    - `/sessions` - List active sessions
+    - `/model` - Show or change the model
+    - `/architect` - Toggle architect/editor mode
+    - `/clear` - Clear the terminal
+    - `/quit` or `/exit` - End the session
+  </Step>
+</Steps>
+
+## One-Shot Mode
+
+Execute a single task and exit:
+
+```bash
+loom "find all TODO comments in the codebase"
+```
+
+Loom will:
+1. Start a session
+2. Process your request
+3. Display the response
+4. Exit automatically
+
+This is perfect for:
+- Quick code analysis
+- Automated scripts
+- CI/CD integrations
+
+## Session Management
+
+### View Active Sessions
+
+List all running sessions:
+
+```
+loom> /sessions
+```
+
+You'll see session IDs and their status:
+```
+Active sessions:
+  abc123 (idle)
+  def456 (thinking)
+```
+
+### Resume a Session
+
+Continue a previous conversation:
+
+```bash
+loom --resume abc123
+```
+
+All conversation history and context is preserved.
+
+## Model Selection
+
+### Default Model
+
+Configured in your `.loom.toml`:
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+```
+
+### Override at Runtime
+
+Use the `--model` flag:
+
+```bash
+loom -m anthropic:claude-opus-4-6
+```
+
+### Check Current Model
+
+In an interactive session:
+
+```
+loom> /model
+```
+
+Output:
+```
+Current models:
+  Default:   anthropic:claude-sonnet-4-6
+  Weak:      anthropic:claude-haiku-4-5
+  Architect: anthropic:claude-opus-4-6
+  Editor:    anthropic:claude-haiku-4-5
+```
+
+## Architect Mode
+
+Toggle between normal and architect mode during a session:
+
+```
+loom> /architect
+```
+
+<CardGroup cols={2}>
+  <Card title="Normal Mode" icon="brain">
+    Single AI model handles all tasks directly.
+  </Card>
+  
+  <Card title="Architect Mode" icon="sitemap">
+    Uses two models:
+    - **Architect**: Plans and coordinates
+    - **Editor**: Executes file changes
+    
+    Better for large refactorings and complex tasks.
+  </Card>
+</CardGroup>
+
+## Permission Prompts
+
+When Loom needs to perform sensitive operations (write files, run commands), you'll see a permission prompt:
+
+```
+[file_write] wants to: write to src/user.ex
+
+[y]es / [n]o / [a]lways for this session:
+```
+
+<ResponseField name="Options">
+  - **y** (yes): Allow this one time
+  - **n** (no): Deny this operation
+  - **a** (always): Allow for all operations in this session
+</ResponseField>
+
+### Auto-Approve Mode
+
+Skip all prompts with `--yes`:
+
+```bash
+loom -y "refactor the user module"
+```
+
+<Warning>
+  Use auto-approve mode carefully. The AI will be able to write files and run commands without confirmation.
+</Warning>
+
+## Output Formatting
+
+The CLI renders markdown responses with:
+- Syntax-highlighted code blocks
+- Formatted lists and headers
+- File path references (e.g., `src/app.ex:42`)
+- Tool execution indicators
+
+### Status Indicators
+
+While Loom is working, you'll see:
+```
+Thinking...
+```
+
+When tools are running:
+```
+Running file_read...
+Running shell...
+```
+
+## Examples
+
+### Code Analysis
+
+```bash
+loom "analyze the performance bottlenecks in this codebase"
+```
+
+### Bug Fixing
+
+```bash
+loom "fix the authentication bug reported in issue #123"
+```
+
+### Refactoring
+
+```bash
+loom -m anthropic:claude-opus-4-6 "refactor the user module to use a GenServer"
+```
+
+### Test Generation
+
+```bash
+loom "add tests for the payment processing module"
+```
+
+### Documentation
+
+```bash
+loom "add docstrings to all public functions in lib/core/"
+```
+
+## Tips & Best Practices
+
+<Tip>
+  **Be Specific**: The more context you provide, the better Loom's responses.
+  
+  Instead of: `"fix the bug"`
+  
+  Try: `"fix the nil pointer error in user_controller.ex when email is missing"`
+</Tip>
+
+<Tip>
+  **Use Sessions**: For complex tasks, use interactive mode so Loom can ask clarifying questions and iterate on solutions.
+</Tip>
+
+<Tip>
+  **Check History**: Use `/history` to review what Loom has learned about your codebase during the session.
+</Tip>
+
+## Troubleshooting
+
+### Session Not Starting
+
+Ensure you're in a valid project directory with a `.loom.toml` config file. If not, Loom will use default settings.
+
+### Model Not Found
+
+Check your API keys are configured:
+
+```bash
+export ANTHROPIC_API_KEY=your-key
+```
+
+### Permission Denied
+
+If Loom can't write files, check file permissions in your project directory.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Web UI" icon="browser" href="/features/web-ui">
+    Try the visual interface with file tree and diff viewer
+  </Card>
+  
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Learn about Loom's built-in tools for code manipulation
+  </Card>
+  
+  <Card title="Permissions" icon="shield" href="/features/permissions">
+    Configure permission policies for your workspace
+  </Card>
+  
+  <Card title="MCP" icon="plug" href="/features/mcp">
+    Connect external tools via Model Context Protocol
+  </Card>
+</CardGroup>

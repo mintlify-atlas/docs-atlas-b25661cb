@@ -1,0 +1,273 @@
+---
+title: Configuration
+description: Configure Loom with .loom.toml and environment variables
+---
+
+Loom is configured through a combination of `.loom.toml` files and environment variables. Configuration is loaded at startup and can be customized per-project.
+
+## Configuration File
+
+Loom looks for a `.loom.toml` file in your project directory. If found, it merges your settings with the built-in defaults.
+
+### Location
+
+Place `.loom.toml` in your project root:
+
+```bash
+your-project/
+├── .loom.toml
+├── lib/
+├── test/
+└── ...
+```
+
+## Configuration Options
+
+### Model Configuration
+
+Control which LLM models Loom uses for different tasks:
+
+<CodeGroup>
+```toml Default Configuration
+[model]
+default = "anthropic:claude-sonnet-4-6"    # Main agent model
+weak = "anthropic:claude-haiku-4-5"        # For summaries, commits
+architect = "anthropic:claude-opus-4-6"    # For architect mode planning
+editor = "anthropic:claude-haiku-4-5"      # For architect mode execution
+```
+
+```toml Using OpenAI
+[model]
+default = "openai:gpt-4-turbo-preview"
+weak = "openai:gpt-3.5-turbo"
+```
+
+```toml Using Local Model
+[model]
+default = "groq:llama-3-70b"
+weak = "groq:llama-3-8b"
+```
+</CodeGroup>
+
+#### Model Roles
+
+- **default** - Primary model for the agent loop. Handles reasoning, planning, and tool execution.
+- **weak** - Faster, cheaper model for simple tasks like commit message generation and summarization.
+- **architect** - Strong model used in [Architect Mode](/guides/architect-mode) for planning edits.
+- **editor** - Fast model used in Architect Mode for executing the plan.
+
+<Tip>
+The `weak` model is used by [sub-agents](/guides/sub-agents) for parallel codebase exploration, so choose a model with good reading comprehension but lower cost.
+</Tip>
+
+### Permission Configuration
+
+Control which tools can run without asking for permission:
+
+```toml .loom.toml
+[permissions]
+auto_approve = [
+  "file_read",
+  "file_search",
+  "content_search",
+  "directory_list"
+]
+```
+
+<Warning>
+Be cautious about auto-approving write operations like `file_write` or `shell` commands. These have security implications.
+</Warning>
+
+#### Available Tool Names
+
+- `file_read` - Reading file contents
+- `file_write` - Creating or overwriting files
+- `file_edit` - Modifying existing files
+- `file_search` - Glob pattern file searches
+- `content_search` - Regex searches in file contents
+- `directory_list` - Listing directory contents
+- `shell` - Running shell commands
+- `git` - Git operations
+- `decision_log` - Logging decisions to the graph
+- `decision_query` - Querying the decision graph
+- `sub_agent` - Spawning read-only search agents
+
+### Context Configuration
+
+Control token budget allocation for different context types:
+
+```toml .loom.toml
+[context]
+max_repo_map_tokens = 2048              # Tokens for file/symbol map
+max_decision_context_tokens = 1024      # Tokens for decision graph context
+reserved_output_tokens = 4096           # Tokens reserved for model output
+```
+
+#### Understanding Token Budgets
+
+Loom manages context window size by allocating token budgets:
+
+<Steps>
+  <Step title="Calculate Available Tokens">
+    Start with the model's total context window (e.g., 200K for Claude Sonnet)
+  </Step>
+  <Step title="Reserve Output Space">
+    Subtract `reserved_output_tokens` to ensure the model has room to respond
+  </Step>
+  <Step title="Allocate Fixed Contexts">
+    Assign tokens for repo map (`max_repo_map_tokens`) and decision context (`max_decision_context_tokens`)
+  </Step>
+  <Step title="Pack Conversation History">
+    Use remaining tokens for conversation history, compacting older messages if needed
+  </Step>
+</Steps>
+
+<Tip>
+**Tight on context?** Reduce `max_repo_map_tokens` to 1024 or disable decision context by setting `max_decision_context_tokens = 0`.
+</Tip>
+
+### Decision Configuration
+
+Control the [decision graph](/concepts/decision-graphs) behavior:
+
+```toml .loom.toml
+[decisions]
+enabled = true                # Enable decision graph tracking
+enforce_pre_edit = false     # Require decisions before file edits
+auto_log_commits = true      # Automatically log git commits as outcomes
+```
+
+#### Decision Options
+
+- **enabled** - When `false`, disables the decision graph entirely (saves memory and reduces context usage)
+- **enforce_pre_edit** - When `true`, requires logging a decision before any file edit operation
+- **auto_log_commits** - When `true`, automatically creates outcome nodes in the decision graph when commits are made
+
+### Repository Configuration
+
+Control file watching and indexing:
+
+```toml .loom.toml
+[repo]
+watch_enabled = true    # Watch files for changes and auto-refresh index
+```
+
+<Tip>
+Disable `watch_enabled` if you're working on a very large repository or experiencing performance issues.
+</Tip>
+
+## Environment Variables
+
+### LLM Provider API Keys
+
+Set the API key for your chosen provider:
+
+<CodeGroup>
+```bash Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+```bash OpenAI
+export OPENAI_API_KEY="sk-..."
+```
+
+```bash Google AI
+export GOOGLE_API_KEY="..."
+```
+
+```bash xAI
+export XAI_API_KEY="xai-..."
+```
+
+```bash Groq
+export GROQ_API_KEY="gsk_..."
+```
+</CodeGroup>
+
+See the [req_llm documentation](https://hexdocs.pm/req_llm) for all supported providers.
+
+### Database Location
+
+By default, Loom stores its SQLite database in `~/.loom/loom.db`. Override this:
+
+```bash
+export LOOM_DB_PATH="/path/to/custom/loom.db"
+```
+
+### Web UI Port
+
+The Phoenix LiveView web UI runs on port 4200 by default:
+
+```bash
+export PORT=8080
+mix phx.server
+```
+
+## Full Example Configuration
+
+Here's a complete `.loom.toml` with all options:
+
+```toml .loom.toml
+# Model selection
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "anthropic:claude-haiku-4-5"
+architect = "anthropic:claude-opus-4-6"
+editor = "anthropic:claude-haiku-4-5"
+
+# Tool permissions
+[permissions]
+auto_approve = [
+  "file_read",
+  "file_search",
+  "content_search",
+  "directory_list"
+]
+
+# Context window budgets
+[context]
+max_repo_map_tokens = 2048
+max_decision_context_tokens = 1024
+reserved_output_tokens = 4096
+
+# Decision graph
+[decisions]
+enabled = true
+enforce_pre_edit = false
+auto_log_commits = true
+
+# Repository watching
+[repo]
+watch_enabled = true
+```
+
+## Programmatic Configuration
+
+You can also override configuration at runtime using the `Loom.Config` module:
+
+```elixir
+# Get a config value
+Loom.Config.get(:model, :default)
+# => "anthropic:claude-sonnet-4-6"
+
+# Set a config value for this session
+Loom.Config.put(:model, %{default: "openai:gpt-4"})
+
+# Get all config
+Loom.Config.all()
+```
+
+<Warning>
+Runtime configuration changes with `Loom.Config.put/2` are **not** persisted to disk. They only affect the current application instance.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Project Rules" icon="book" href="/guides/project-rules">
+    Define project-specific instructions and constraints
+  </Card>
+  <Card title="Model Selection" icon="brain" href="/guides/model-selection">
+    Choose the right models for your use case
+  </Card>
+</CardGroup>

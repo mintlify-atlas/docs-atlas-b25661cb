@@ -1,0 +1,559 @@
+---
+title: Repo Intelligence
+description: File indexing, symbol extraction, and smart repository mapping
+---
+
+## Overview
+
+Repo Intelligence is Loom's **context-aware code understanding system**. It indexes your repository, extracts symbols, and generates relevance-ranked maps to help the AI understand your codebase structure.
+
+## Core Components
+
+### 1. File Index (`Loom.RepoIntel.Index`)
+
+An **ETS-based in-memory index** of all files in your repository.
+
+#### What It Tracks
+
+```elixir
+%{
+  mtime: ~N[2026-02-28 10:30:00],  # Last modified time
+  size: 4521,                       # File size in bytes
+  type: :file,                      # Always :file (future: :directory)
+  language: :elixir                 # Detected language
+}
+```
+
+#### Language Detection
+
+Supports 15+ languages via file extension:
+
+| Language | Extensions |
+|----------|------------|
+| Elixir | `.ex`, `.exs` |
+| JavaScript | `.js`, `.jsx`, `.mjs` |
+| TypeScript | `.ts`, `.tsx` |
+| Python | `.py` |
+| Ruby | `.rb` |
+| Rust | `.rs` |
+| Go | `.go` |
+| And more... | See `lib/loom/repo_intel/index.ex:46` |
+
+#### Skipped Files
+
+The index automatically skips:
+
+```elixir
+@skip_dirs ~w(.git _build deps node_modules .loom .elixir_ls)
+```
+
+Hidden files/directories are skipped **unless** in the keep list:
+
+```elixir
+@keep_hidden ~w(.loom.toml .formatter.exs)
+```
+
+#### API Usage
+
+```elixir
+# Full repository scan
+Loom.RepoIntel.Index.build()
+
+# Incremental update (only changed files)
+Loom.RepoIntel.Index.refresh()
+
+# Query files
+Loom.RepoIntel.Index.list_files(language: :elixir)
+Loom.RepoIntel.Index.list_files(pattern: "**/*_test.exs")
+Loom.RepoIntel.Index.list_files(min_size: 1000, max_size: 10000)
+
+# Get stats
+Loom.RepoIntel.Index.stats()
+# => %{
+#   total_files: 342,
+#   by_language: %{elixir: 120, javascript: 45, markdown: 15, ...},
+#   total_size: 1_234_567
+# }
+```
+
+### 2. Symbol Extraction (`Loom.RepoIntel.TreeSitter`)
+
+Extracts **functions, classes, modules, and types** from source code.
+
+#### Two-Tier Strategy
+
+1. **Tree-sitter (AST-based)** - If `tree-sitter` CLI is available
+2. **Enhanced regex fallback** - If tree-sitter is unavailable
+
+<Note>
+Tree-sitter provides **more accurate** extraction but requires the `tree-sitter` CLI to be installed. The regex fallback works well for most cases.
+</Note>
+
+#### Supported Languages
+
+- Elixir (modules, functions, macros, types, specs)
+- JavaScript/TypeScript (functions, classes, interfaces, types, enums)
+- Python (classes, functions, async functions)
+- Ruby (classes, modules, methods, attributes)
+- Go (functions, methods, structs, interfaces)
+- Rust (functions, structs, enums, traits, impls)
+
+#### Example: Elixir Symbols
+
+```elixir
+TreeSitter.extract_symbols("/path/to/session.ex")
+# => [
+#   %{name: "Loom.Session", type: :module, line: 1, signature: nil},
+#   %{name: "send_message", type: :function, line: 42, signature: "send_message(pid, text)"},
+#   %{name: "get_history", type: :function, line: 55, signature: nil},
+#   %{name: "t", type: :type, line: 12, signature: nil}
+# ]
+```
+
+#### Caching
+
+Symbol extraction results are **cached in ETS** by file path and mtime:
+
+```elixir
+# Cache structure
+{file_path, {mtime, symbols}}
+```
+
+The cache is automatically invalidated when files change.
+
+<Accordion title="View caching logic">
+```elixir
+defp cached_symbols(file_path) do
+  case :ets.lookup(@ets_table, file_path) do
+    [{^file_path, {mtime, symbols}}] ->
+      case File.stat(file_path) do
+        {:ok, %{mtime: ^mtime}} -> {:ok, symbols}  # Cache hit
+        _ -> :miss  # File changed
+      end
+    [] -> :miss  # Not cached
+  end
+end
+```
+</Accordion>
+
+### 3. Repository Map (`Loom.RepoIntel.RepoMap`)
+
+Generates a **ranked, token-budgeted map** of your repository for the AI.
+
+#### Relevance Ranking
+
+Files are scored based on:
+
+1. **Intrinsic importance**
+   - Entry points (e.g., `application.ex`) score **20**
+   - Config files (e.g., `mix.exs`) score **18**
+   - Router files score **15**
+   - Files in `lib/` score **10**
+   - Files in `test/` score **5**
+
+2. **Mentioned in conversation** - +**100** bonus
+3. **Keyword matches** - +**10** per keyword
+
+```elixir
+RepoMap.rank_files(file_entries,
+  mentioned_files: ["lib/session.ex", "lib/context_window.ex"],
+  keywords: ["session", "context"]
+)
+```
+
+#### Map Generation
+
+The map is structured markdown within a token budget:
+
+```elixir
+RepoMap.generate(project_path,
+  max_tokens: 2048,
+  mentioned_files: ["lib/session.ex"],
+  keywords: ["auth"]
+)
+```
+
+**Output format:**
+
+```markdown
+## Project Files
+
+### lib/loom/session/session.ex (relevance: high)
+Modules: Loom.Session
+Functions: send_message/?, get_history/?, update_model/?
+
+### lib/loom/session/context_window.ex (relevance: medium)
+Modules: Loom.Session.ContextWindow
+Functions: build_messages/?, allocate_budget/?
+
+### lib/loom/application.ex (relevance: medium)
+Modules: Loom.Application
+Functions: start/?
+```
+
+<Info>
+**Relevance labels:**
+- **high** - Score ≥ 100 (mentioned or critical files)
+- **medium** - Score 10-99
+- **low** - Score < 10
+</Info>
+
+### 4. File Watcher (`Loom.RepoIntel.Watcher`)
+
+Monitors the file system for changes and **auto-updates** the index.
+
+#### Features
+
+- **OS-level notifications** via `FileSystem` library (inotify/FSEvents/polling)
+- **Debouncing** - Collects changes for 200ms before processing
+- **Gitignore support** - Respects `.gitignore` patterns
+- **PubSub broadcasting** - Notifies subscribers of repo changes
+
+#### Change Processing
+
+```elixir
+# Subscribe to repo updates
+Phoenix.PubSub.subscribe(Loom.PubSub, "repo:updates")
+
+# Receive notifications
+receive do
+  {:repo_updated, changes} ->
+    # changes = [{"lib/session.ex", :modified}, {"test/new_test.exs", :created}]
+end
+```
+
+#### Gitignore Parsing
+
+The watcher parses `.gitignore` and converts glob patterns to regex:
+
+```elixir
+# .gitignore
+node_modules/
+*.log
+**/.DS_Store
+
+# Converted to regex patterns
+~r/(?:^|/)node_modules(?:/|$)/
+~r/[^/]*\.log/
+~r/(?:.+/)?\.DS_Store(?:/|$)/
+```
+
+<Warning>
+The watcher is **optional** and can be disabled via config:
+
+```elixir
+config :loom, :repo, watch_enabled: false
+```
+
+When disabled, you must manually call `Index.refresh()` to update the index.
+</Warning>
+
+### 5. Context Packer (`Loom.RepoIntel.ContextPacker`)
+
+Packs ranked files into a **token-budgeted context string** with tiered detail:
+
+- **High relevance** (score ≥ 100): Full file content
+- **Medium relevance** (score 10-99): Symbols only
+- **Low relevance** (score < 10): Filename only
+
+```elixir
+ranked = RepoMap.rank_files(files, mentioned_files: ["lib/session.ex"])
+ContextPacker.pack(ranked, token_budget: 4000, project_path: "/path")
+```
+
+**Output:**
+
+```markdown
+## Project Context
+
+### lib/loom/session/session.ex (relevance: high)
+```elixir
+defmodule Loom.Session do
+  # ... full file content ...
+end
+```
+
+### lib/loom/application.ex (relevance: medium)
+  module: Loom.Application (line 1)
+  function: start (line 6)
+
+### lib/loom/config.ex
+```
+
+## Integration with Sessions
+
+Repo Intelligence is automatically injected into the **system prompt** via the Context Window:
+
+```elixir
+# In Loom.Session.ContextWindow
+defp inject_repo_map(system_parts, project_path, opts) do
+  case Loom.RepoIntel.RepoMap.generate(project_path, opts) do
+    {:ok, repo_map} when is_binary(repo_map) and repo_map != "" ->
+      system_parts ++ [repo_map]
+    _ ->
+      system_parts
+  end
+end
+```
+
+The repo map is allocated **2048 tokens** by default:
+
+```elixir
+@zone_defaults %{
+  repo_map: 2048,           # Repo map budget
+  decision_context: 1024,   # Decision graph budget
+  system_prompt: 2048,      # Base prompt
+  # ...
+}
+```
+
+## Example Workflow
+
+<Steps>
+  <Step title="Index initialization">
+    On startup, Loom scans the project directory:
+    ```elixir
+    Loom.RepoIntel.Index.build()
+    ```
+  </Step>
+
+  <Step title="Watcher starts (optional)">
+    The file watcher monitors for changes:
+    ```elixir
+    Loom.RepoIntel.Watcher.watch(project_path)
+    ```
+  </Step>
+
+  <Step title="User sends a message">
+    "Add error handling to the session module"
+  </Step>
+
+  <Step title="Context window builds repo map">
+    ```elixir
+    RepoMap.generate(project_path,
+      max_tokens: 2048,
+      keywords: ["session", "error"]
+    )
+    ```
+  </Step>
+
+  <Step title="Repo map is injected into system prompt">
+    The LLM receives:
+    - Base system prompt
+    - **Repo map** (files matching "session" and "error")
+    - Decision context
+    - Conversation history
+  </Step>
+
+  <Step title="AI uses repo context">
+    The AI references `lib/loom/session/session.ex` and proposes changes
+  </Step>
+
+  <Step title="File is modified">
+    AI calls `file_edit` tool
+  </Step>
+
+  <Step title="Watcher detects change">
+    ```elixir
+    # Watcher updates index
+    :ets.insert(:loom_repo_index, {"lib/loom/session/session.ex", new_meta})
+    
+    # Broadcasts to subscribers
+    Phoenix.PubSub.broadcast(Loom.PubSub, "repo:updates", 
+      {:repo_updated, [{"lib/loom/session/session.ex", :modified}]}
+    )
+    ```
+  </Step>
+</Steps>
+
+## Performance Considerations
+
+### Indexing Speed
+
+- **Initial scan** - ~1000 files/second on SSD
+- **Incremental refresh** - ~5000 files/second (only stat checks)
+- **ETS lookups** - Microseconds (read concurrency enabled)
+
+### Memory Usage
+
+ETS tables use ~100 bytes per file entry:
+
+- **10,000 files** ≈ 1 MB
+- **100,000 files** ≈ 10 MB
+
+Symbol caches add ~500 bytes per file with symbols:
+
+- **10,000 source files** ≈ 5 MB
+
+### Optimization Tips
+
+<AccordionGroup>
+  <Accordion title="Add large generated directories to .gitignore">
+    Skip indexing build artifacts, dependencies, etc.:
+    
+    ```gitignore
+    _build/
+    deps/
+    node_modules/
+    .elixir_ls/
+    ```
+  </Accordion>
+
+  <Accordion title="Use incremental refresh over full rebuild">
+    ```elixir
+    # Fast: only checks changed files
+    Index.refresh()
+    
+    # Slow: rescans entire repository
+    Index.build()
+    ```
+  </Accordion>
+
+  <Accordion title="Tune the repo map token budget">
+    Lower budgets = faster generation, less context:
+    
+    ```elixir
+    RepoMap.generate(project_path, max_tokens: 1024)  # Faster
+    RepoMap.generate(project_path, max_tokens: 4096)  # More context
+    ```
+  </Accordion>
+
+  <Accordion title="Clear the symbol cache periodically">
+    If memory usage is a concern:
+    
+    ```elixir
+    TreeSitter.clear_cache()
+    ```
+    
+    The cache will rebuild lazily as symbols are extracted.
+  </Accordion>
+</AccordionGroup>
+
+## Advanced Usage
+
+### Custom Symbol Extraction
+
+Add support for a new language:
+
+```elixir
+defp enhanced_extract(content, :my_language) do
+  lines = String.split(content, "\n")
+
+  patterns = [
+    {~r/^class\s+(\w+)/m, :class, &extract_name/1},
+    {~r/^function\s+(\w+)/m, :function, &extract_signature/1}
+  ]
+
+  extract_with_enhanced_patterns(lines, patterns)
+end
+```
+
+### Ranking Customization
+
+Override the base scoring:
+
+```elixir
+defp base_score(path, _meta) do
+  cond do
+    String.ends_with?(path, "controller.ex") -> 25  # Prioritize controllers
+    String.contains?(path, "api/") -> 20
+    String.contains?(path, "lib/") -> 10
+    true -> 1
+  end
+end
+```
+
+### Query Patterns
+
+Use glob patterns for complex queries:
+
+```elixir
+# All test files
+Index.list_files(pattern: "**/*_test.exs")
+
+# TypeScript components
+Index.list_files(pattern: "src/components/**/*.tsx")
+
+# Large Elixir files
+Index.list_files(language: :elixir, min_size: 10_000)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Index is empty after startup">
+    Check if the project path is set correctly:
+    
+    ```elixir
+    Loom.RepoIntel.Index.set_project("/path/to/your/project")
+    Loom.RepoIntel.Index.build()
+    ```
+  </Accordion>
+
+  <Accordion title="Watcher not detecting changes">
+    1. Verify the watcher is running:
+       ```elixir
+       Loom.RepoIntel.Watcher.status()
+       # => %{watching: true, project_path: "/path", pending_changes: 0}
+       ```
+    
+    2. Check if the file is gitignored:
+       ```elixir
+       # Files matching .gitignore patterns are skipped
+       ```
+    
+    3. Try manual refresh:
+       ```elixir
+       Loom.RepoIntel.Index.refresh()
+       ```
+  </Accordion>
+
+  <Accordion title="Repo map is always empty">
+    Ensure files exist and are indexed:
+    
+    ```elixir
+    Index.stats()
+    # => %{total_files: 0, ...}  ← Problem!
+    
+    # Fix: rebuild index
+    Index.set_project("/correct/path")
+    Index.build()
+    ```
+  </Accordion>
+
+  <Accordion title="Symbol extraction returns empty list">
+    1. Check if tree-sitter is installed:
+       ```bash
+       which tree-sitter
+       # If not found, symbols fall back to regex
+       ```
+    
+    2. Verify the language is supported:
+       ```elixir
+       Index.detect_language("myfile.xyz")
+       # => :unknown  ← Not supported
+       ```
+    
+    3. Check the regex patterns for your language in `tree_sitter.ex`
+  </Accordion>
+</AccordionGroup>
+
+## Future Enhancements
+
+- **LSP integration** - Use Language Server Protocol for precise symbols
+- **Call graph analysis** - Track function dependencies
+- **Semantic search** - Embed code snippets for similarity search
+- **Cross-reference tracking** - Find all usages of a symbol
+- **Git blame integration** - Show recent changes and authors
+- **Incremental parsing** - Only re-parse changed functions, not entire files
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Context Window" icon="window-maximize" href="/concepts/context-window">
+    See how repo maps fit into the context budget
+  </Card>
+  <Card title="Sessions" icon="comments" href="/concepts/sessions">
+    Learn how sessions use repo intelligence
+  </Card>
+</CardGroup>

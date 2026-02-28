@@ -1,0 +1,426 @@
+---
+title: "Web Interface"
+description: "Visual workspace for AI-powered coding with real-time collaboration"
+icon: "browser"
+---
+
+Loom's web interface provides a rich, visual environment for interacting with your AI coding assistant. See file changes, terminal output, and project structure all in one place.
+
+## Overview
+
+The web UI is a Phoenix LiveView application that runs locally and provides:
+
+<CardGroup cols={2}>
+  <Card title="Chat Interface" icon="comments">
+    Conversational coding with markdown rendering and code highlighting
+  </Card>
+  
+  <Card title="File Explorer" icon="folder-tree">
+    Browse your project structure with instant file preview
+  </Card>
+  
+  <Card title="Diff Viewer" icon="code-compare">
+    Visual unified diffs for all file changes
+  </Card>
+  
+  <Card title="Terminal Output" icon="terminal">
+    See command execution results in real-time
+  </Card>
+</CardGroup>
+
+## Starting the Web UI
+
+Launch the web interface:
+
+```bash
+mix phx.server
+```
+
+Then open your browser to:
+```
+http://localhost:4000
+```
+
+A new session starts automatically when you load the page.
+
+## Interface Layout
+
+The workspace is divided into three main areas:
+
+### Header Bar
+
+The top bar displays:
+- **Loom logo** - Brand and app identifier
+- **Model selector** - Change AI models on the fly
+- **Mode toggle** - Switch between Normal and Architect mode
+- **Cost tracker** - Running total of tokens and API costs
+- **Session switcher** - Navigate between active sessions
+- **Status indicator** - Current session state (Ready, Thinking, Running tool)
+
+### Main Chat Area
+
+The central panel shows your conversation:
+
+<Steps>
+  <Step title="Send Messages">
+    Type your request in the text area at the bottom. Press Shift+Enter to submit.
+    
+    ```
+    Add authentication to the user module
+    ```
+  </Step>
+  
+  <Step title="View Responses">
+    Loom's responses appear with:
+    - Markdown formatting
+    - Syntax-highlighted code blocks
+    - File path references
+    - Collapsible tool results
+  </Step>
+  
+  <Step title="Track Progress">
+    Watch real-time indicators:
+    - "Thinking..." with animated pulse
+    - "Running file_read..." with spinner
+    - Tool results in expandable details
+  </Step>
+</Steps>
+
+### Sidebar Tabs
+
+The right sidebar has four tabs:
+
+#### Files Tab
+
+Browse and preview your project files:
+
+- **Tree view** with expand/collapse folders
+- **Filter input** to search by filename
+- **Click to preview** - file contents appear below the tree
+- **Syntax coloring** - different colors for file types
+- **Stats footer** - total file count and size
+
+**Skipped directories**: `.git`, `_build`, `deps`, `node_modules`, `.loom`, `.elixir_ls`
+
+#### Diff Tab
+
+Visual diff viewer for all file changes:
+
+- **Unified diff format** with line numbers
+- **Color-coded changes**:
+  - Green background: Added lines
+  - Red background: Deleted lines
+  - Gray: Context lines
+- **Collapsible files** - click file name to expand/collapse
+- **Addition/deletion counts** - see +/- line counts per file
+
+Each diff shows:
+```
+[▼] src/user.ex                    +5 -2
+```
+
+Expand to see the full unified diff with old and new line numbers.
+
+#### Terminal Tab
+
+View output from shell commands:
+
+- **Command history** - all executed commands
+- **Exit codes** - success/failure indicators
+- **stdout/stderr** - full command output
+- **Scrollable** - review long output
+
+#### Graph Tab
+
+Visual decision graph showing:
+- Session flow and branching
+- Tool invocations
+- Decision points
+
+<Info>
+  The graph view uses the decision logging system to track Loom's reasoning process.
+</Info>
+
+## Session Management
+
+### Creating Sessions
+
+Click **New Session** in the session switcher to start a fresh conversation.
+
+Each session:
+- Has a unique ID (first 8 characters shown in UI)
+- Maintains its own conversation history
+- Tracks independent cost/token metrics
+- Can be resumed later
+
+### Switching Sessions
+
+Use the session switcher dropdown to:
+1. View all active sessions
+2. Switch to a different session
+3. See session status (idle, thinking, executing)
+
+Sessions persist across page refreshes.
+
+### Session URLs
+
+Each session has a unique URL:
+```
+http://localhost:4000/sessions/abc12345-def6-7890-ghij-klmnopqrstuv
+```
+
+Bookmark or share session URLs to return to specific conversations.
+
+## Model Selection
+
+### Changing Models
+
+Click the model selector dropdown to choose from available models:
+
+- `anthropic:claude-opus-4-6` - Most capable, slower, higher cost
+- `anthropic:claude-sonnet-4-6` - Balanced performance (default)
+- `anthropic:claude-haiku-4-5` - Fast, lower cost
+
+The model change takes effect immediately for the next message.
+
+### Model Configuration
+
+Models are defined in your `.loom.toml`:
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "anthropic:claude-haiku-4-5"
+architect = "anthropic:claude-opus-4-6"
+editor = "anthropic:claude-haiku-4-5"
+```
+
+## Architect Mode
+
+Toggle the **Architect** button to enable two-model workflow:
+
+<Tabs>
+  <Tab title="Normal Mode">
+    **Single model** handles everything:
+    - Planning
+    - Code writing
+    - Testing
+    - Debugging
+    
+    Best for: Quick tasks, simple changes, exploration
+  </Tab>
+  
+  <Tab title="Architect Mode">
+    **Two-model system**:
+    
+    1. **Architect** (stronger model):
+       - Analyzes requirements
+       - Creates implementation plan
+       - Coordinates sub-tasks
+       - Reviews changes
+    
+    2. **Editor** (faster model):
+       - Executes file edits
+       - Runs tests
+       - Applies changes
+    
+    Best for: Large refactorings, complex features, multi-file changes
+  </Tab>
+</Tabs>
+
+The mode badge shows current state:
+- **Normal** (gray) - single model
+- **Architect** (purple) - two-model mode
+
+## Permission Dialogs
+
+When Loom needs to perform write or execute operations, a modal appears:
+
+```
+Permission Required
+
+Allow file_edit on src/user.ex?
+
+[Deny] [Allow Once] [Allow Always]
+```
+
+<ResponseField name="Actions">
+  - **Deny**: Reject this operation, Loom continues without it
+  - **Allow Once**: Approve this single operation
+  - **Allow Always**: Auto-approve all operations for this session
+</ResponseField>
+
+### Auto-Approve Config
+
+Set tools to auto-approve in `.loom.toml`:
+
+```toml
+[permissions]
+auto_approve = [
+  "file_read",
+  "content_search",
+  "directory_list"
+]
+```
+
+## Real-Time Updates
+
+The UI updates live as Loom works:
+
+1. **Status changes**: Idle → Thinking → Executing tool → Idle
+2. **Message streaming**: Assistant responses appear as they're generated
+3. **Tool execution**: Spinners and indicators show active tools
+4. **Diff updates**: New diffs appear automatically after edits
+5. **Terminal output**: Command results stream in real-time
+
+No page refresh needed - everything updates via Phoenix LiveView.
+
+## Cost Dashboard
+
+Click the cost display in the header to open the full dashboard:
+
+```
+$0.0042 / 2.3k tok
+```
+
+The dashboard shows:
+- **Total cost** across all sessions
+- **Token usage** (prompt + completion)
+- **Cost per session**
+- **Cost per model**
+- **Historical trends**
+
+Access at: `http://localhost:4000/dashboard`
+
+## Keyboard Shortcuts
+
+<ResponseField name="Shift + Enter">
+  Submit message in text area
+</ResponseField>
+
+<ResponseField name="Esc">
+  Close permission dialog (denies request)
+</ResponseField>
+
+## File Tree Features
+
+### Filtering Files
+
+Type in the filter input to search:
+```
+Filter files... user
+```
+
+Shows only files/folders matching "user" (case-insensitive).
+
+### File Preview
+
+Click any file to see its contents:
+- Opens in split view below the tree
+- Syntax-free plain text display
+- Close with × button
+- Full scrolling for large files
+
+### Expandable Folders
+
+Click folder names to expand/collapse:
+- ▶ Collapsed folder
+- ▼ Expanded folder
+
+State persists during your session.
+
+## Message Display
+
+### User Messages
+
+Your messages appear on the right side with gray background.
+
+### Assistant Messages
+
+Loom's responses on the left with:
+- Indigo Loom icon (L)
+- Dark background
+- Rendered markdown:
+  - Headers
+  - Code blocks with syntax highlighting
+  - Lists (ordered and unordered)
+  - Links
+  - Bold, italic, inline code
+
+### Tool Results
+
+Collapsible `<details>` sections:
+
+```
+▶ Tool result: call_abc123
+```
+
+Click to expand and see:
+- Full tool output
+- Truncated if > 2000 characters
+- Monospace font for readability
+
+## Responsive Design
+
+The UI adapts to different screen sizes:
+
+- **Desktop** (1400px+): Full layout with sidebar
+- **Laptop** (1024px+): Compact sidebar
+- **Tablet/Mobile** (768px): Stacked layout, collapsible panels
+
+## Dark Theme
+
+Loom uses a dark color scheme optimized for long coding sessions:
+
+- Background: `#030712` (gray-950)
+- Panels: `#111827` (gray-900)
+- Borders: `#1f2937` (gray-800)
+- Primary: `#6366f1` (indigo-400)
+- Text: `#f3f4f6` (gray-100)
+
+## Browser Support
+
+<Check>Chromium-based browsers (Chrome, Edge, Brave)</Check>
+<Check>Firefox</Check>
+<Check>Safari</Check>
+
+Requires:
+- JavaScript enabled
+- WebSocket support
+- Modern CSS (flexbox, grid)
+
+## Performance
+
+### Live Updates
+
+Phoenix LiveView uses WebSockets for real-time updates without polling.
+
+### Large Files
+
+File preview is limited to prevent browser slowdown:
+- Display limit: Full file
+- Diff truncation: After 2000 chars in tool results
+
+### Session History
+
+All messages are kept in memory. For very long sessions (100+ messages), consider starting a new session.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CLI" icon="terminal" href="/features/cli">
+    Use Loom from the command line
+  </Card>
+  
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Understand what tools Loom can use
+  </Card>
+  
+  <Card title="Permissions" icon="shield" href="/features/permissions">
+    Configure security policies
+  </Card>
+  
+  <Card title="Cost Dashboard" icon="chart-line" href="/dashboard">
+    Track API usage and costs
+  </Card>
+</CardGroup>

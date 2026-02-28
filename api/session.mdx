@@ -1,0 +1,420 @@
+---
+title: Session API
+description: Core session management API for creating and controlling Loom coding assistant sessions
+---
+
+The Session API provides the main interface for creating and managing Loom coding assistant sessions. Each session represents an isolated conversation with the AI agent, maintaining its own message history, state, and configuration.
+
+## Overview
+
+The `Loom.Session` module is a GenServer that runs the agent loop for a coding assistant session. It handles:
+
+- Message exchange between user and AI
+- Tool execution with permission management
+- Model configuration and switching
+- Session persistence and resumption
+- Two modes: normal and architect (planning + execution)
+
+## Session Lifecycle
+
+### Starting a Session
+
+Use `Loom.Session.Manager` to start new sessions:
+
+```elixir
+alias Loom.Session.Manager
+
+# Start a new session with default settings
+{:ok, pid} = Manager.start_session(
+  session_id: "my-session-123",
+  model: "anthropic:claude-sonnet-4-6",
+  project_path: "/path/to/project",
+  tools: [Loom.Tools.FileRead, Loom.Tools.FileWrite],
+  auto_approve: false
+)
+```
+
+<ParamField path="session_id" type="String.t()">
+  Unique identifier for the session. Auto-generated if not provided.
+</ParamField>
+
+<ParamField path="model" type="String.t()" default="anthropic:claude-sonnet-4-6">
+  The LLM model to use, in format `provider:model-id`. Supported providers: `anthropic`, `openai`, `google`.
+</ParamField>
+
+<ParamField path="project_path" type="String.t()">
+  Root directory of the project. Defaults to current working directory.
+</ParamField>
+
+<ParamField path="title" type="String.t()" optional>
+  Human-readable session title for display purposes.
+</ParamField>
+
+<ParamField path="tools" type="[module()]" default="[]">
+  List of tool modules available to the agent (e.g., FileRead, FileWrite).
+</ParamField>
+
+<ParamField path="auto_approve" type="boolean()" default="false">
+  If true, automatically approve all tool executions without prompting.
+</ParamField>
+
+### Finding an Existing Session
+
+```elixir
+# Find session by ID
+case Manager.find_session("my-session-123") do
+  {:ok, pid} -> IO.puts("Found session at #{inspect(pid)}")
+  :error -> IO.puts("Session not found")
+end
+```
+
+<ResponseField name="{:ok, pid()}" type="tuple">
+  Returns the session process PID if found.
+</ResponseField>
+
+<ResponseField name=":error" type="atom">
+  Returned when the session does not exist.
+</ResponseField>
+
+### Listing Active Sessions
+
+```elixir
+active_sessions = Manager.list_active()
+# Returns: [%{id: "session-1", pid: #PID<0.123.0>, status: :idle}, ...]
+
+Enum.each(active_sessions, fn session ->
+  IO.puts("Session #{session.id}: #{session.status}")
+end)
+```
+
+<ResponseField name="list" type="[map()]">
+  List of active session metadata maps containing:
+  - `id` (String.t()): Session identifier
+  - `pid` (pid()): Process ID
+  - `status` (atom()): Current status (`:idle`, `:thinking`, `:executing_tool`)
+</ResponseField>
+
+## Sending Messages
+
+### send_message/2
+
+Send a user message and receive the assistant's response.
+
+```elixir
+case Loom.Session.send_message("my-session-123", "Explain this function") do
+  {:ok, response} -> IO.puts(response)
+  {:error, reason} -> IO.puts("Error: #{reason}")
+end
+```
+
+<ParamField path="session_id" type="pid() | String.t()">
+  Either the session PID or session ID string.
+</ParamField>
+
+<ParamField path="message" type="String.t()">
+  The user message text to send.
+</ParamField>
+
+<ResponseField name="{:ok, response}" type="{:ok, String.t()}">
+  The assistant's text response.
+</ResponseField>
+
+<ResponseField name="{:error, reason}" type="{:error, term()}">
+  Error details if the session is not found or processing failed.
+</ResponseField>
+
+<Note>
+This call blocks until the assistant completes its response, which may include multiple tool executions. For long-running operations, consider subscribing to session events via PubSub.
+</Note>
+
+## Retrieving History
+
+### get_history/1
+
+Get the complete conversation history for a session.
+
+```elixir
+{:ok, messages} = Loom.Session.get_history("my-session-123")
+
+Enum.each(messages, fn msg ->
+  IO.puts("[#{msg.role}] #{msg.content}")
+end)
+```
+
+<ResponseField name="messages" type="[map()]">
+  List of message maps with the following structure:
+  - `role` (`:user` | `:assistant` | `:tool` | `:system`): Message sender
+  - `content` (String.t()): Message text content
+  - `tool_calls` ([map()], optional): Tool calls made by assistant
+  - `tool_call_id` (String.t(), optional): ID linking tool results to calls
+</ResponseField>
+
+## Model Management
+
+### update_model/2
+
+Change the LLM model for an active session.
+
+```elixir
+:ok = Loom.Session.update_model("my-session-123", "openai:gpt-4")
+```
+
+<ParamField path="session_id" type="pid() | String.t()">
+  Session PID or ID.
+</ParamField>
+
+<ParamField path="model" type="String.t()">
+  New model identifier in format `provider:model-id`.
+</ParamField>
+
+<Info>
+Model changes take effect immediately for the next message. Previous messages remain in history and can influence future responses regardless of model change.
+</Info>
+
+## Session Modes
+
+### set_mode/2
+
+Switch between normal and architect mode.
+
+```elixir
+# Enable architect mode (planning + execution with different models)
+:ok = Loom.Session.set_mode("my-session-123", :architect)
+
+# Return to normal mode
+:ok = Loom.Session.set_mode("my-session-123", :normal)
+```
+
+<ParamField path="session_id" type="pid() | String.t()">
+  Session PID or ID.
+</ParamField>
+
+<ParamField path="mode" type=":normal | :architect">
+  - `:normal`: Standard agent loop with configured model
+  - `:architect`: Two-phase execution with planning (strong model) and execution (fast model)
+</ParamField>
+
+### get_mode/1
+
+Retrieve the current session mode.
+
+```elixir
+{:ok, mode} = Loom.Session.get_mode("my-session-123")
+IO.puts("Current mode: #{mode}")
+```
+
+<ResponseField name="mode" type=":normal | :architect">
+  The active session mode.
+</ResponseField>
+
+## Status and Events
+
+### get_status/1
+
+Get the current execution status of a session.
+
+```elixir
+{:ok, status} = Loom.Session.get_status("my-session-123")
+```
+
+<ResponseField name="status" type="atom()">
+  One of:
+  - `:idle`: Waiting for user input
+  - `:thinking`: AI is generating a response
+  - `:executing_tool`: Running a tool
+</ResponseField>
+
+### subscribe/1
+
+Subscribe to real-time session events via Phoenix PubSub.
+
+```elixir
+Loom.Session.subscribe("my-session-123")
+
+receive do
+  {:new_message, session_id, message} ->
+    IO.puts("New message: #{message.content}")
+
+  {:session_status, session_id, status} ->
+    IO.puts("Status changed to: #{status}")
+
+  {:tool_executing, session_id, tool_name} ->
+    IO.puts("Executing tool: #{tool_name}")
+
+  {:tool_complete, session_id, tool_name, result} ->
+    IO.puts("Tool #{tool_name} completed")
+
+  {:permission_request, session_id, tool_name, tool_path} ->
+    IO.puts("Permission needed: #{tool_name} on #{tool_path}")
+
+  {:mode_changed, session_id, mode} ->
+    IO.puts("Mode changed to: #{mode}")
+end
+```
+
+<Info>
+Subscribe to session events to build reactive UIs or monitor long-running operations. All events are broadcast on the topic `"session:#{session_id}"`.
+</Info>
+
+## Permission Management
+
+### respond_to_permission/3
+
+Respond to a pending permission request for tool execution.
+
+```elixir
+# Allow once
+:ok = Loom.Session.respond_to_permission(
+  "my-session-123",
+  "allow_once",
+  %{}
+)
+
+# Allow always for this session
+:ok = Loom.Session.respond_to_permission(
+  "my-session-123",
+  "allow_always",
+  %{}
+)
+
+# Deny
+:ok = Loom.Session.respond_to_permission(
+  "my-session-123",
+  "deny",
+  %{}
+)
+```
+
+<ParamField path="session_id" type="String.t()">
+  Session ID.
+</ParamField>
+
+<ParamField path="action" type="String.t()">
+  Permission action: `"allow_once"`, `"allow_always"`, or `"deny"`.
+</ParamField>
+
+<ParamField path="meta" type="map()" default="%{}">
+  Additional metadata (currently unused).
+</ParamField>
+
+<Warning>
+When a tool requires permission, the session will pause and emit a `:permission_request` event. The session remains blocked until `respond_to_permission/3` is called.
+</Warning>
+
+## Session Manager API
+
+The `Loom.Session.Manager` module provides lifecycle management functions.
+
+### start_session/1
+
+Start a new session under the DynamicSupervisor.
+
+```elixir
+{:ok, pid} = Loom.Session.Manager.start_session(
+  model: "anthropic:claude-sonnet-4-6",
+  project_path: "/workspace"
+)
+```
+
+See [Starting a Session](#starting-a-session) for parameter details.
+
+### stop_session/1
+
+Gracefully stop a running session.
+
+```elixir
+:ok = Loom.Session.Manager.stop_session("my-session-123")
+```
+
+<ResponseField name=":ok" type="atom">
+  Session stopped successfully.
+</ResponseField>
+
+<ResponseField name="{:error, :not_found}" type="tuple">
+  Session does not exist.
+</ResponseField>
+
+### find_session/1
+
+Lookup a session by ID to get its PID.
+
+```elixir
+case Loom.Session.Manager.find_session("my-session-123") do
+  {:ok, pid} -> send_message(pid, "Hello")
+  :error -> IO.puts("Session not found")
+end
+```
+
+### list_active/0
+
+List all active sessions with metadata.
+
+```elixir
+sessions = Loom.Session.Manager.list_active()
+# [%{id: "session-1", pid: #PID<0.123.0>, status: :idle}, ...]
+```
+
+## Complete Example
+
+```elixir
+alias Loom.Session
+alias Loom.Session.Manager
+
+# Start a new session
+{:ok, pid} = Manager.start_session(
+  session_id: "code-review-session",
+  model: "anthropic:claude-sonnet-4-6",
+  project_path: "/workspace/my-app",
+  tools: [
+    Loom.Tools.FileRead,
+    Loom.Tools.FileWrite,
+    Loom.Tools.ContentSearch
+  ]
+)
+
+# Subscribe to events
+Session.subscribe("code-review-session")
+
+# Send a message
+{:ok, response} = Session.send_message(
+  "code-review-session",
+  "Review the authentication logic in lib/auth.ex"
+)
+
+IO.puts(response)
+
+# Get conversation history
+{:ok, history} = Session.get_history("code-review-session")
+IO.inspect(history, label: "Full history")
+
+# Switch to architect mode for complex refactoring
+Session.set_mode("code-review-session", :architect)
+
+{:ok, plan} = Session.send_message(
+  "code-review-session",
+  "Refactor the auth module to use a more secure token system"
+)
+
+# Clean up
+Manager.stop_session("code-review-session")
+```
+
+## Type Specifications
+
+```elixir
+@type session_id :: String.t()
+@type model :: String.t()
+@type message :: %{
+  role: :user | :assistant | :tool | :system,
+  content: String.t(),
+  tool_calls: [tool_call()] | nil,
+  tool_call_id: String.t() | nil
+}
+@type tool_call :: %{
+  id: String.t(),
+  name: String.t(),
+  arguments: map()
+}
+@type status :: :idle | :thinking | :executing_tool
+@type mode :: :normal | :architect
+```

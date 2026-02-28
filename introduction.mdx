@@ -1,0 +1,104 @@
+---
+title: Introduction
+description: An Elixir-native AI coding assistant that weaves reasoning, code intelligence, and persistent memory into one thread
+---
+
+<img src="/images/loom-banner.jpg" alt="Loom — The Weaver Owl" />
+
+## What is Loom?
+
+Loom is an **Elixir-native AI coding assistant** that reads your codebase, proposes edits, runs commands, and commits changes — through both an interactive CLI and a Phoenix LiveView web UI with real-time streaming chat, file browsing, diff viewing, and an interactive decision graph.
+
+Unlike chat-based coding tools, Loom maintains a persistent **decision graph** across sessions so it remembers *why* decisions were made, not just *what* was done.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Phoenix LiveView Web UI" icon="window">
+    Real-time streaming chat, file tree browser, unified diff viewer, interactive SVG decision graph, model selector, and session switcher — all without writing JavaScript
+  </Card>
+  
+  <Card title="Interactive CLI" icon="terminal">
+    REPL-style interface with streaming output, colored diffs, markdown rendering powered by Owl. One-shot mode or persistent sessions
+  </Card>
+  
+  <Card title="Decision Graph" icon="diagram-project">
+    Persistent reasoning memory with 7 node types (goal, decision, option, action, outcome, observation, revisit) and typed relationships. Remembers context across sessions
+  </Card>
+  
+  <Card title="11 Built-in Tools" icon="toolbox">
+    File read/write/edit, glob search, regex search, directory listing, shell execution, git operations, decision logging/querying, and sub-agent search
+  </Card>
+  
+  <Card title="Multi-Provider LLM Support" icon="brain">
+    Support for Anthropic, OpenAI, Google, Groq, xAI, and more via req_llm. 16+ providers, 665+ models. Real-time cost tracking
+  </Card>
+  
+  <Card title="Repo Intelligence" icon="magnifying-glass-chart">
+    ETS-backed file index, regex symbol extraction, relevance-ranked context packing. Token-aware context window with automatic budget allocation
+  </Card>
+</CardGroup>
+
+## Why Elixir?
+
+Most AI coding tools are built in Python or TypeScript. Loom is built in Elixir because the BEAM virtual machine is quietly the best runtime for AI agent workloads:
+
+<AccordionGroup>
+  <Accordion title="Concurrency without complexity">
+    An AI agent that reads files, searches code, runs shell commands, and calls LLMs is inherently concurrent. On the BEAM, each tool execution is a lightweight process. Parallel tool calls aren't a threading nightmare — they're just `Task.async_stream`. No thread pools, no callback hell, no GIL.
+  </Accordion>
+  
+  <Accordion title="Fault tolerance is built in">
+    When a shell command hangs or an LLM provider times out, OTP supervisors handle it. A crashed tool doesn't take down the session. A crashed session doesn't take down the application. This isn't defensive coding — it's how the BEAM works.
+  </Accordion>
+  
+  <Accordion title="LiveView for real-time UI">
+    No other AI coding assistant offers a real-time web UI with streaming chat, file browsing, diff viewing, and decision graph visualization — without writing a single line of JavaScript. Phoenix LiveView makes this possible. The same session GenServer that powers the CLI powers the web UI. Two interfaces, one source of truth.
+  </Accordion>
+  
+  <Accordion title="Hot code reloading">
+    Update Loom's tools, add new providers, tweak the system prompt — all without restarting sessions or losing conversation state. In production. While agents are running.
+  </Accordion>
+  
+  <Accordion title="Pattern matching for LLM responses">
+    Elixir's pattern matching makes handling the zoo of LLM response formats (tool calls, streaming chunks, error variants, provider-specific quirks) clean and exhaustive rather than a tangle of if/else.
+    
+    ```elixir
+    # This is real code from Loom's agent loop
+    case ReqLLM.Response.classify(response) do
+      %{type: :tool_calls} -> execute_tools_and_continue(response, state)
+      %{type: :final_answer} -> persist_and_return(response, state)
+      %{type: :error} -> handle_error(response, state)
+    end
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Built on Jido
+
+Loom is built on the [Jido](https://github.com/agentjido/jido) agent ecosystem, a thoughtfully designed Elixir-native framework:
+
+- **[jido_action](https://github.com/agentjido/jido_action)** — Every Loom tool is a `Jido.Action` with declarative schemas, automatic validation, and composability
+- **[jido_ai](https://github.com/agentjido/jido_ai)** — Provides the ReAct reasoning strategy that drives the agent loop
+- **[jido_shell](https://github.com/agentjido/jido_shell)** — Sandboxed shell execution with resource limits
+- **[req_llm](https://github.com/agentjido/req_llm)** — 16+ LLM providers, 665+ models, streaming, tool calling, cost tracking
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Loom and configure your first LLM provider
+  </Card>
+  
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get started with your first coding session
+  </Card>
+  
+  <Card title="Decision Graph" icon="diagram-project" href="/concepts/decision-graphs">
+    Learn how Loom remembers context across sessions
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how Loom is built on the BEAM
+  </Card>
+</CardGroup>

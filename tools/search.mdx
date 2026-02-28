@@ -1,0 +1,357 @@
+---
+title: Search Tools
+description: Find files by glob patterns and search content with regex
+---
+
+Loom provides three search tools for navigating and exploring codebases: file pattern matching, content search, and directory listing.
+
+## file_search
+
+Searches for files matching a glob pattern. Results are sorted by modification time (most recent first).
+
+<ParamField path="pattern" type="string" required>
+  Glob pattern to match files. Examples:
+  - `"**/*.ex"` - All Elixir files
+  - `"lib/**/*.ex"` - Elixir files in lib/
+  - `"test/*_test.exs"` - Test files in test/ (non-recursive)
+  - `"*.{ex,exs}"` - Files with multiple extensions
+</ParamField>
+
+<ParamField path="path" type="string">
+  Directory to search in, relative to project root. Defaults to project root.
+</ParamField>
+
+### Returns
+
+Success response includes:
+- Count of matching files
+- List of relative file paths (sorted by modification time, newest first)
+
+```
+Found 12 file(s):
+lib/loom/tools/file_read.ex
+lib/loom/tools/file_write.ex
+lib/loom/tools/file_edit.ex
+...
+```
+
+If no files match:
+```
+No files matched pattern: **/*.py
+```
+
+### Excluded Directories
+
+The following directories are automatically excluded from search:
+- `.git`
+- `_build`
+- `deps`
+- `node_modules`
+- `.elixir_ls`
+- `.lexical`
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Find all Elixir files
+{:ok, result} = Loom.Tools.FileSearch.run(
+  %{pattern: "**/*.ex"},
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir Search in subdirectory
+Loom.Tools.FileSearch.run(
+  %{
+    pattern: "**/*_test.exs",
+    path: "test"
+  },
+  context
+)
+# Searches only in test/ directory
+```
+
+```elixir Multiple extensions
+Loom.Tools.FileSearch.run(
+  %{pattern: "**/*.{ex,exs,eex}"},
+  context
+)
+```
+
+```elixir Specific directory level
+Loom.Tools.FileSearch.run(
+  %{pattern: "lib/loom/tools/*.ex"},
+  context
+)
+# Only direct children, not recursive
+```
+</CodeGroup>
+
+<Tip>
+  Results are sorted by modification time (newest first), making it easy to find recently changed files.
+</Tip>
+
+---
+
+## content_search
+
+Searches file contents for lines matching a regex pattern. Returns matches with file paths and line numbers.
+
+<ParamField path="pattern" type="string" required>
+  Regex pattern to search for. Supports full Elixir/PCRE regex syntax:
+  - `"defmodule.*Router"` - Modules containing "Router"
+  - `"def \\w+"` - Function definitions
+  - `"TODO|FIXME"` - Multiple alternatives
+  - `"@spec.*String.t"` - Type specs with String
+</ParamField>
+
+<ParamField path="path" type="string">
+  Directory to search in, relative to project root. Defaults to project root.
+</ParamField>
+
+<ParamField path="glob" type="string" default="**/*">
+  File filter glob pattern:
+  - `"*.ex"` - Only .ex files
+  - `"*.{ex,exs}"` - Multiple extensions
+  - `"*_test.exs"` - Test files
+  
+  If glob doesn't contain `/` or start with `**`, it's automatically prefixed with `**/`.
+</ParamField>
+
+### Returns
+
+Success response includes:
+- Count of matches
+- Truncation notice if 100+ matches found
+- Matches formatted as `file:line_number:content`
+
+```
+Found 5 match(es):
+lib/loom/router.ex:12:  defmodule Loom.Router do
+lib/my_app/router.ex:1:defmodule MyApp.Router do
+test/router_test.exs:5:  alias Loom.Router
+...
+```
+
+### Limits
+
+<Warning>
+  Results are capped at **100 matches** to prevent overwhelming output. The response indicates if results were truncated:
+  ```
+  Found 100 match(es) (truncated at 100):
+  ```
+</Warning>
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Search for function definitions
+{:ok, result} = Loom.Tools.ContentSearch.run(
+  %{pattern: "def \\w+\\("},
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir Search in specific files
+Loom.Tools.ContentSearch.run(
+  %{
+    pattern: "use Ecto.Schema",
+    glob: "*.ex",
+    path: "lib/my_app/schemas"
+  },
+  context
+)
+```
+
+```elixir Find TODOs in tests
+Loom.Tools.ContentSearch.run(
+  %{
+    pattern: "TODO|FIXME",
+    glob: "*_test.exs"
+  },
+  context
+)
+```
+
+```elixir Complex regex patterns
+Loom.Tools.ContentSearch.run(
+  %{
+    pattern: "@spec \\w+\\(.*\\) :: {:ok.*}|{:error.*}",
+    glob: "*.ex"
+  },
+  context
+)
+# Finds function specs with ok/error tuples
+```
+
+```elixir Case-insensitive search
+Loom.Tools.ContentSearch.run(
+  %{pattern: "(?i)configuration"},
+  context
+)
+# Matches "configuration", "Configuration", "CONFIGURATION"
+```
+</CodeGroup>
+
+### Error Handling
+
+Invalid regex patterns return descriptive errors:
+
+```elixir
+Loom.Tools.ContentSearch.run(
+  %{pattern: "def (unclosed"},
+  context
+)
+
+# Returns:
+{:error, "Invalid regex pattern: missing )"}
+```
+
+---
+
+## directory_list
+
+Lists directory contents with file metadata (type, size, modification time).
+
+<ParamField path="path" type="string" required>
+  Directory path relative to project root
+</ParamField>
+
+### Returns
+
+Success response includes:
+- Directory path and entry count
+- Formatted listing with metadata
+
+```
+lib/loom/tools/ (10 entries)
+  file     1.2KB  2024-01-15 10:30  file_read.ex
+  file     0.8KB  2024-01-15 10:28  file_write.ex
+  file     1.5KB  2024-01-15 10:32  file_edit.ex
+   dir         0  2024-01-10 09:00  helpers/
+  link       128  2024-01-12 14:20  alias.ex
+```
+
+### Format Details
+
+<AccordionGroup>
+  <Accordion title="File Types">
+    - `file` - Regular file
+    - `dir` - Directory (shown with trailing `/`)
+    - `link` - Symbolic link
+    - `???` - Unknown type
+  </Accordion>
+
+  <Accordion title="Size Formatting">
+    - Bytes: `123B`
+    - Kilobytes: `45KB` (1024+ bytes)
+    - Megabytes: `1.2MB` (1048576+ bytes)
+  </Accordion>
+
+  <Accordion title="Timestamps">
+    Format: `YYYY-MM-DD HH:MM`
+    
+    Based on file modification time (mtime).
+  </Accordion>
+</AccordionGroup>
+
+### Usage Examples
+
+<CodeGroup>
+```elixir List project root
+{:ok, result} = Loom.Tools.DirectoryList.run(
+  %{path: "."},
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir List subdirectory
+Loom.Tools.DirectoryList.run(
+  %{path: "lib/my_app/controllers"},
+  context
+)
+```
+
+```elixir Check directory before operations
+# Useful before creating files
+Loom.Tools.DirectoryList.run(
+  %{path: "lib/my_app/new_feature"},
+  context
+)
+
+# If directory doesn't exist:
+{:error, "Directory not found: ..."}
+```
+</CodeGroup>
+
+### Error Cases
+
+<ResponseField name="enoent">
+  Directory not found
+  ```
+  {:error, "Directory not found: lib/nonexistent"}
+  ```
+</ResponseField>
+
+<ResponseField name="enotdir">
+  Path is a file, not a directory
+  ```
+  {:error, "Not a directory: lib/my_app/router.ex"}
+  ```
+</ResponseField>
+
+<Tip>
+  Use `directory_list` before `file_write` to verify target directories exist and check for conflicting files.
+</Tip>
+
+---
+
+## Common Search Patterns
+
+<CardGroup cols={2}>
+  <Card title="Find Module Definitions" icon="code">
+    ```elixir
+    ContentSearch.run(
+      %{pattern: "defmodule \\w+\\.Router"},
+      context
+    )
+    ```
+  </Card>
+
+  <Card title="Find Test Files" icon="vial">
+    ```elixir
+    FileSearch.run(
+      %{pattern: "**/*_test.exs"},
+      context
+    )
+    ```
+  </Card>
+
+  <Card title="Find Config Files" icon="gear">
+    ```elixir
+    FileSearch.run(
+      %{pattern: "config/*.exs"},
+      context
+    )
+    ```
+  </Card>
+
+  <Card title="Find Documentation" icon="book">
+    ```elixir
+    ContentSearch.run(
+      %{
+        pattern: "@moduledoc|@doc",
+        glob: "*.ex"
+      },
+      context
+    )
+    ```
+  </Card>
+</CardGroup>
+
+## Implementation Details
+
+Search tools are implemented in `lib/loom/tools/`:
+- `file_search.ex` - Source: [lib/loom/tools/file_search.ex:1](~/workspace/source/lib/loom/tools/file_search.ex:1)
+- `content_search.ex` - Source: [lib/loom/tools/content_search.ex:1](~/workspace/source/lib/loom/tools/content_search.ex:1)
+- `directory_list.ex` - Source: [lib/loom/tools/directory_list.ex:1](~/workspace/source/lib/loom/tools/directory_list.ex:1)

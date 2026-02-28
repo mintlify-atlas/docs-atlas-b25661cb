@@ -1,0 +1,554 @@
+---
+title: LSP Integration API
+description: Connect to Language Server Protocol servers for diagnostics and code intelligence
+---
+
+The LSP Integration API provides a client implementation for connecting to Language Server Protocol (LSP) servers. It enables Loom to collect diagnostics, errors, and warnings from external language servers like `elixir-ls`, `typescript-language-server`, or `rust-analyzer`.
+
+## Overview
+
+Loom's LSP integration consists of:
+
+- **Client**: GenServer-based LSP client communicating over stdio
+- **Protocol**: JSON-RPC 2.0 message encoding/decoding with Content-Length framing
+- **Supervisor**: Manages multiple LSP client lifecycles
+
+## Configuration
+
+Configure LSP servers in `.loom.toml`:
+
+```toml
+[lsp]
+enabled = true
+
+[[lsp.servers]]
+name = "elixir-ls"
+command = "elixir-ls"
+args = []
+
+[[lsp.servers]]
+name = "typescript"
+command = "typescript-language-server"
+args = ["--stdio"]
+
+[[lsp.servers]]
+name = "rust-analyzer"
+command = "rust-analyzer"
+args = []
+```
+
+<Info>
+LSP servers are started automatically on boot when `lsp.enabled = true`. Use `Loom.LSP.Supervisor.start_from_config/0` to load them.
+</Info>
+
+## LSP Supervisor
+
+The `Loom.LSP.Supervisor` module manages LSP client processes.
+
+### start_client/1
+
+Start a new LSP client for a language server.
+
+```elixir
+{:ok, pid} = Loom.LSP.Supervisor.start_client(
+  name: "elixir-ls",
+  command: "elixir-ls",
+  args: []
+)
+```
+
+<ParamField path="name" type="String.t()" required>
+  Unique name for this LSP client instance.
+</ParamField>
+
+<ParamField path="command" type="String.t()" required>
+  Executable name or path to the language server binary.
+</ParamField>
+
+<ParamField path="args" type="[String.t()]" default="[]">
+  Command-line arguments to pass to the language server.
+</ParamField>
+
+<ResponseField name="{:ok, pid}" type="{:ok, pid()}">
+  Successfully started LSP client process.
+</ResponseField>
+
+<ResponseField name="{:error, reason}" type="{:error, term()}">
+  Failed to start client (e.g., executable not found).
+</ResponseField>
+
+### stop_client/1
+
+Stop a running LSP client by name.
+
+```elixir
+:ok = Loom.LSP.Supervisor.stop_client("elixir-ls")
+```
+
+### list_clients/0
+
+List all running LSP client names.
+
+```elixir
+clients = Loom.LSP.Supervisor.list_clients()
+# ["elixir-ls", "typescript", "rust-analyzer"]
+
+Enum.each(clients, fn name ->
+  IO.puts("Client: #{name}")
+end)
+```
+
+<ResponseField name="clients" type="[String.t()]">
+  List of active LSP client names.
+</ResponseField>
+
+### start_from_config/0
+
+Start all LSP clients defined in `.loom.toml`.
+
+```elixir
+:ok = Loom.LSP.Supervisor.start_from_config()
+```
+
+<Note>
+This function is called automatically during application startup if `lsp.enabled = true`.
+</Note>
+
+## LSP Client
+
+The `Loom.LSP.Client` module handles individual language server connections.
+
+### initialize/2
+
+Initialize the LSP server connection with a root path.
+
+```elixir
+{:ok, result} = Loom.LSP.Client.initialize(
+  "elixir-ls",
+  "/workspace/my-elixir-app"
+)
+
+IO.inspect(result, label: "Server capabilities")
+```
+
+<ParamField path="name" type="String.t()">
+  Client name (as registered when started).
+</ParamField>
+
+<ParamField path="root_path" type="String.t()">
+  Absolute path to the project root directory.
+</ParamField>
+
+<ResponseField name="{:ok, result}" type="{:ok, map()}">
+  Initialization result containing server capabilities.
+</ResponseField>
+
+<ResponseField name="{:error, reason}" type="{:error, term()}">
+  Initialization failed (e.g., server not running, timeout).
+</ResponseField>
+
+<Warning>
+You must call `initialize/2` before using any other client functions. Most LSP servers reject requests until initialized.
+</Warning>
+
+### did_open/3
+
+Notify the server that a file was opened.
+
+```elixir
+Loom.LSP.Client.did_open(
+  "elixir-ls",
+  "/workspace/my-app/lib/accounts.ex",
+  "elixir"
+)
+```
+
+<ParamField path="name" type="String.t()">
+  Client name.
+</ParamField>
+
+<ParamField path="file_path" type="String.t()">
+  Absolute path to the file.
+</ParamField>
+
+<ParamField path="language_id" type="String.t()">
+  Language identifier (e.g., `"elixir"`, `"typescript"`, `"rust"`).
+</ParamField>
+
+<Info>
+Language IDs should match the LSP specification. Common IDs: `elixir`, `javascript`, `typescript`, `python`, `go`, `rust`, `ruby`.
+</Info>
+
+### did_close/2
+
+Notify the server that a file was closed.
+
+```elixir
+Loom.LSP.Client.did_close(
+  "elixir-ls",
+  "/workspace/my-app/lib/accounts.ex"
+)
+```
+
+### get_diagnostics/2
+
+Get current diagnostics for a specific file.
+
+```elixir
+{:ok, diagnostics} = Loom.LSP.Client.get_diagnostics(
+  "elixir-ls",
+  "/workspace/my-app/lib/accounts.ex"
+)
+
+Enum.each(diagnostics, fn diag ->
+  IO.puts("
+    #{diag.severity} at line #{diag.line}: #{diag.message}
+  ")
+end)
+```
+
+<ResponseField name="diagnostics" type="[map()]">
+  List of diagnostic maps containing:
+  - `line` (integer()): Line number (1-indexed)
+  - `character` (integer()): Character position (1-indexed)
+  - `severity` (`:error` | `:warning` | `:information` | `:hint`): Issue severity
+  - `message` (String.t()): Diagnostic message
+  - `source` (String.t()): Diagnostic source (e.g., `"elixir-ls"`)
+  - `code` (String.t() | integer() | nil): Error code
+</ResponseField>
+
+### all_diagnostics/1
+
+Get all diagnostics across all files.
+
+```elixir
+{:ok, all_diags} = Loom.LSP.Client.all_diagnostics("elixir-ls")
+
+Enum.each(all_diags, fn {uri, diagnostics} ->
+  file_path = Loom.LSP.Protocol.uri_to_path(uri)
+  IO.puts("#{file_path}: #{length(diagnostics)} issues")
+end)
+```
+
+<ResponseField name="diagnostics_map" type="map()">
+  Map of file URIs to diagnostic lists: `%{uri => [diagnostic]}`
+</ResponseField>
+
+### status/1
+
+Check the client connection status.
+
+```elixir
+status = Loom.LSP.Client.status("elixir-ls")
+
+case status do
+  :ready -> IO.puts("Connected and initialized")
+  :starting -> IO.puts("Initializing...")
+  :stopped -> IO.puts("Not running")
+  :not_running -> IO.puts("Client not found")
+end
+```
+
+<ResponseField name="status" type="atom()">
+  One of:
+  - `:idle`: Client created but not initialized
+  - `:starting`: Initialization in progress
+  - `:ready`: Connected and ready for requests
+  - `:stopped`: Server has exited
+  - `:not_running`: Client process not found
+</ResponseField>
+
+### shutdown/1
+
+Gracefully shut down the LSP server.
+
+```elixir
+:ok = Loom.LSP.Client.shutdown("elixir-ls")
+```
+
+<Info>
+This sends the LSP `shutdown` request followed by `exit` notification. The server process terminates cleanly.
+</Info>
+
+## LSP Protocol
+
+The `Loom.LSP.Protocol` module handles JSON-RPC 2.0 message encoding/decoding.
+
+### encode_request/3
+
+Encode a JSON-RPC request with Content-Length header.
+
+```elixir
+msg = Loom.LSP.Protocol.encode_request(
+  1,
+  "textDocument/hover",
+  %{
+    "textDocument" => %{"uri" => "file:///path/to/file.ex"},
+    "position" => %{"line" => 10, "character" => 5}
+  }
+)
+
+IO.puts(msg)
+# Content-Length: 145
+#
+# {"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{...}}
+```
+
+<ParamField path="id" type="integer()">
+  Unique request identifier.
+</ParamField>
+
+<ParamField path="method" type="String.t()">
+  LSP method name (e.g., `"textDocument/hover"`).
+</ParamField>
+
+<ParamField path="params" type="map()" default="%{}">
+  Request parameters.
+</ParamField>
+
+### encode_notification/2
+
+Encode a JSON-RPC notification (no response expected).
+
+```elixir
+msg = Loom.LSP.Protocol.encode_notification(
+  "textDocument/didOpen",
+  %{
+    "textDocument" => %{
+      "uri" => "file:///path/to/file.ex",
+      "languageId" => "elixir",
+      "version" => 1,
+      "text" => "defmodule MyApp do\nend"
+    }
+  }
+)
+```
+
+### decode_message/1
+
+Decode a JSON-RPC message body.
+
+```elixir
+{:ok, msg} = Loom.LSP.Protocol.decode_message(
+  ~s({"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}})
+)
+
+IO.inspect(msg)
+# %{
+#   "jsonrpc" => "2.0",
+#   "id" => 1,
+#   "result" => %{"capabilities" => %{}},
+#   :type => :response
+# }
+```
+
+### extract_message/1
+
+Extract one complete message from a binary buffer.
+
+```elixir
+buffer = "Content-Length: 45\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}more data"
+
+case Loom.LSP.Protocol.extract_message(buffer) do
+  {:ok, msg, remaining} ->
+    IO.inspect(msg, label: "Message")
+    IO.inspect(remaining, label: "Remaining buffer")
+
+  {:incomplete, buffer} ->
+    IO.puts("Need more data")
+end
+```
+
+### Helper Functions
+
+#### path_to_uri/1
+
+Convert a file path to a `file://` URI.
+
+```elixir
+uri = Loom.LSP.Protocol.path_to_uri("/workspace/lib/app.ex")
+# "file:///workspace/lib/app.ex"
+```
+
+#### uri_to_path/1
+
+Convert a `file://` URI back to a file path.
+
+```elixir
+path = Loom.LSP.Protocol.uri_to_path("file:///workspace/lib/app.ex")
+# "/workspace/lib/app.ex"
+```
+
+#### severity_name/1
+
+Map LSP diagnostic severity integer to atom.
+
+```elixir
+Loom.LSP.Protocol.severity_name(1)  # :error
+Loom.LSP.Protocol.severity_name(2)  # :warning
+Loom.LSP.Protocol.severity_name(3)  # :information
+Loom.LSP.Protocol.severity_name(4)  # :hint
+```
+
+#### severity_value/1
+
+Map severity atom to LSP integer.
+
+```elixir
+Loom.LSP.Protocol.severity_value(:error)       # 1
+Loom.LSP.Protocol.severity_value(:warning)     # 2
+Loom.LSP.Protocol.severity_value(:information) # 3
+Loom.LSP.Protocol.severity_value(:hint)        # 4
+```
+
+## Complete Example
+
+```elixir
+alias Loom.LSP.{Supervisor, Client, Protocol}
+
+# Start an Elixir language server
+{:ok, _pid} = Supervisor.start_client(
+  name: "elixir-ls",
+  command: "elixir-ls",
+  args: []
+)
+
+# Initialize with project root
+{:ok, capabilities} = Client.initialize(
+  "elixir-ls",
+  "/workspace/my-elixir-app"
+)
+
+IO.inspect(capabilities, label: "Server capabilities")
+
+# Open a file for diagnostics
+Client.did_open(
+  "elixir-ls",
+  "/workspace/my-elixir-app/lib/accounts.ex",
+  "elixir"
+)
+
+# Wait for server to analyze the file
+Process.sleep(2000)
+
+# Get diagnostics
+{:ok, diagnostics} = Client.get_diagnostics(
+  "elixir-ls",
+  "/workspace/my-elixir-app/lib/accounts.ex"
+)
+
+IO.puts("Found #{length(diagnostics)} diagnostics:")
+
+Enum.each(diagnostics, fn diag ->
+  severity_icon = case diag.severity do
+    :error -> "❌"
+    :warning -> "⚠️"
+    :information -> "ℹ️"
+    :hint -> "💡"
+  end
+
+  IO.puts("
+    #{severity_icon} Line #{diag.line}:#{diag.character}
+    #{diag.message}
+    Source: #{diag.source}
+  ")
+end)
+
+# Get all diagnostics across the project
+{:ok, all_diags} = Client.all_diagnostics("elixir-ls")
+
+IO.puts("\nAll project diagnostics:")
+
+Enum.each(all_diags, fn {uri, file_diags} ->
+  path = Protocol.uri_to_path(uri)
+  error_count = Enum.count(file_diags, & &1.severity == :error)
+  warning_count = Enum.count(file_diags, & &1.severity == :warning)
+
+  if error_count > 0 or warning_count > 0 do
+    IO.puts("#{path}: #{error_count} errors, #{warning_count} warnings")
+  end
+end)
+
+# Close the file when done
+Client.did_close(
+  "elixir-ls",
+  "/workspace/my-elixir-app/lib/accounts.ex"
+)
+
+# Clean shutdown
+Client.shutdown("elixir-ls")
+```
+
+## Supported Language Servers
+
+Loom has been tested with:
+
+| Language | Server | Command | Notes |
+|----------|--------|---------|-------|
+| Elixir | elixir-ls | `elixir-ls` | Install via `brew install elixir-ls` |
+| TypeScript | typescript-language-server | `typescript-language-server --stdio` | Install via `npm install -g typescript-language-server` |
+| Rust | rust-analyzer | `rust-analyzer` | Install via `rustup component add rust-analyzer` |
+| Python | pyright | `pyright-langserver --stdio` | Install via `npm install -g pyright` |
+| Go | gopls | `gopls` | Install via `go install golang.org/x/tools/gopls@latest` |
+| Ruby | solargraph | `solargraph stdio` | Install via `gem install solargraph` |
+
+## Troubleshooting
+
+### Server Not Starting
+
+1. Verify the executable is in your PATH:
+   ```bash
+   which elixir-ls
+   ```
+
+2. Test the server manually:
+   ```bash
+   elixir-ls
+   ```
+
+3. Check Loom logs for startup errors
+
+### No Diagnostics Received
+
+1. Ensure you called `initialize/2` first
+2. Call `did_open/3` to notify the server about files
+3. Wait a few seconds for server analysis
+4. Check server status: `Client.status("server-name")`
+
+### Connection Hangs
+
+1. Some servers require specific arguments (e.g., `--stdio`)
+2. Check stderr output for server errors
+3. Verify the server supports stdio communication
+
+## Performance Tips
+
+<Tip>
+1. Only open files you're actively working on - `did_open` triggers analysis
+2. Close files when done - `did_close` frees server resources
+3. Initialize once per project, reuse the client for multiple files
+4. Use `all_diagnostics/1` to batch-fetch diagnostics instead of per-file calls
+</Tip>
+
+## Type Specifications
+
+```elixir
+# Client status
+@type status :: :idle | :starting | :ready | :stopped | :not_running
+
+# Diagnostic
+@type diagnostic :: %{
+  line: integer(),
+  character: integer(),
+  severity: :error | :warning | :information | :hint,
+  message: String.t(),
+  source: String.t(),
+  code: String.t() | integer() | nil
+}
+
+# Diagnostics map
+@type diagnostics_map :: %{String.t() => [diagnostic()]}
+
+# LSP message types
+@type message_type :: :request | :response | :error_response | :notification | :unknown
+```

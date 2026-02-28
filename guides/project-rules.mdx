@@ -1,0 +1,346 @@
+---
+title: Project Rules
+description: Define project-specific instructions and constraints with LOOM.md
+---
+
+Project rules let you give Loom persistent instructions that are injected into every conversation. This is how you encode project conventions, architectural patterns, and tool constraints without repeating yourself.
+
+## The LOOM.md File
+
+Create a `LOOM.md` file in your project root. Loom will automatically load it when starting a session in that directory.
+
+### Alternative Names
+
+Loom looks for these files in order:
+1. `LOOM.md`
+2. `.loom.md`
+3. `loom.md`
+
+<Tip>
+Use `.loom.md` if you want the file hidden from directory listings.
+</Tip>
+
+## Basic Structure
+
+A LOOM.md file is parsed as Markdown with special sections:
+
+```markdown LOOM.md
+# Project Instructions
+
+This is a Phoenix LiveView app using Ecto with PostgreSQL.
+We follow the context module pattern with modules organized under `lib/myapp/`.
+
+## Rules
+- Always run `mix format` after editing .ex files
+- Run `mix test` before committing
+- Use `binary_id` for all primary keys
+- Follow the context module pattern
+
+## Allowed Operations
+- Shell: `mix test`, `mix format`, `git status`, `git diff`
+- File Write: `lib/**`, `test/**`, `priv/repo/migrations/**`
+
+## Denied Operations
+- File Write: `config/runtime.exs`, `.env*`, `*.pem`
+- Shell: `rm -rf`, `mix deps.clean`
+```
+
+## Recognized Sections
+
+Loom recognizes three special section headings:
+
+### Rules Section
+
+List project-specific rules as bullet points. These are injected into the system prompt.
+
+```markdown
+## Rules
+- Use descriptive variable names
+- Prefer pattern matching over conditionals
+- Write doctests for public functions
+- Keep modules under 500 lines
+```
+
+<Tip>
+Rules are **advisory** - Loom will try to follow them but won't enforce them programmatically. For **enforcement**, use Allowed/Denied Operations.
+</Tip>
+
+### Allowed Operations Section
+
+Define patterns for operations that should be allowed without user approval:
+
+```markdown
+## Allowed Operations
+- Shell: `mix test`, `mix format`, `git status`, `git diff`
+- File Write: `lib/**/*.ex`, `test/**/*_test.exs`
+- File Edit: `lib/myapp/**`, `test/**`
+```
+
+Format: `- <category>: <pattern1>, <pattern2>, ...`
+
+#### Categories
+
+- **Shell** - Shell commands (matched as prefix, e.g., `git` matches `git status`, `git commit`)
+- **File Write** - File creation/overwriting (glob patterns)
+- **File Edit** - File modifications (glob patterns)
+- **File Read** - File reading (glob patterns)
+
+<Warning>
+Allowed operations **bypass** the permission system. Only allow operations you fully trust.
+</Warning>
+
+### Denied Operations Section
+
+Explicitly deny dangerous operations:
+
+```markdown
+## Denied Operations
+- File Write: `config/prod.exs`, `config/runtime.exs`, `.env*`, `*.pem`
+- Shell: `rm -rf`, `mix deps.clean`, `mix ecto.drop`
+```
+
+Denied operations take precedence over allowed operations and will fail immediately without asking for permission.
+
+## Custom Instructions
+
+Any Markdown outside the three recognized sections becomes **instructions** injected into the system prompt.
+
+```markdown LOOM.md
+# Phoenix Best Practices
+
+This project uses Phoenix 1.7 with LiveView.
+
+### Authentication
+We use Pow for authentication. User sessions are stored in Redis.
+Never commit secrets to the repo.
+
+### Testing Strategy
+Write feature tests for LiveView interactions.
+Use Mox for external service mocks.
+
+## Rules
+- Run `mix format` before committing
+...
+```
+
+Everything under "Phoenix Best Practices" and "Authentication" and "Testing Strategy" becomes part of the instructions.
+
+## Complete Example
+
+Here's a real-world LOOM.md for an Elixir project:
+
+```markdown LOOM.md
+# Loom Project Guidelines
+
+Loom is an Elixir-native AI coding assistant built with Phoenix LiveView and OTP.
+
+## Architecture
+- **Session layer**: One GenServer per conversation
+- **Tool layer**: Jido.Action modules for all capabilities
+- **Decision graph**: SQLite-backed DAG for reasoning memory
+- **Web UI**: Phoenix LiveView with PubSub broadcasting
+
+## Coding Standards
+- Follow [Credo](https://github.com/rrrene/credo) guidelines
+- Use `with` for happy-path chaining
+- Pattern match in function heads when possible
+- Keep GenServers focused on coordination, not business logic
+
+## Testing
+- Async tests by default unless testing ETS/global state
+- Use `setup` callbacks for common fixtures
+- Test both success and error paths
+
+## Rules
+- Run `mix format` after editing Elixir files
+- Run `mix test` before creating commits
+- Use `Loom.Tool.param!/2` for required params, `param/3` for optional
+- Keep system prompts in the module that uses them, not in config
+- Broadcast session events via PubSub for LiveView updates
+- Never expose raw file paths to the LLM - use relative paths
+
+## Allowed Operations
+- Shell: `mix test`, `mix format`, `mix credo`, `git status`, `git diff`, `git log`
+- File Write: `lib/**/*.ex`, `test/**/*.exs`, `priv/repo/migrations/*.exs`
+- File Edit: `lib/**`, `test/**`, `config/*.exs`
+- File Read: `**/*`
+
+## Denied Operations
+- File Write: `config/runtime.exs`, `.env*`, `*.pem`, `priv/**/*.db`
+- Shell: `rm -rf`, `mix deps.clean --all`, `mix ecto.drop`, `git push --force`
+```
+
+## How Rules Are Applied
+
+When you start a Loom session:
+
+<Steps>
+  <Step title="Load LOOM.md">
+    Loom searches for `LOOM.md`, `.loom.md`, or `loom.md` in the project directory
+  </Step>
+  <Step title="Parse Sections">
+    The file is split into recognized sections (Rules, Allowed Operations, Denied Operations) and custom instructions
+  </Step>
+  <Step title="Inject Into System Prompt">
+    Rules and instructions are formatted and added to the system prompt for every LLM call
+  </Step>
+  <Step title="Configure Permission Manager">
+    Allowed and denied operations are registered with the permission system
+  </Step>
+</Steps>
+
+## Programmatic Access
+
+You can load and inspect project rules programmatically:
+
+```elixir
+# Load rules from a project directory
+{:ok, rules} = Loom.ProjectRules.load("/path/to/project")
+
+rules.raw          # Original file content
+rules.instructions # Custom instructions text
+rules.rules        # List of rule strings
+rules.allowed_ops  # Map of %{"shell" => ["git*"], ...}
+rules.denied_ops   # List of denied operation strings
+
+# Format for system prompt injection
+prompt_text = Loom.ProjectRules.format_for_prompt(rules)
+```
+
+## Best Practices
+
+### Start Simple
+
+Don't overthink your first LOOM.md. Start with basic rules and expand as patterns emerge:
+
+```markdown
+## Rules
+- Run tests before committing
+- Format code after editing
+```
+
+### Be Specific About Patterns
+
+Vague rules like "write good code" aren't helpful. Be concrete:
+
+<CodeGroup>
+```markdown ❌ Too Vague
+## Rules
+- Write clean code
+- Use best practices
+- Be careful with changes
+```
+
+```markdown ✅ Specific
+## Rules
+- Limit functions to 50 lines
+- Extract helper modules when a module exceeds 500 lines
+- Use Ecto changesets for all data validation
+- Write @doc annotations for all public functions
+```
+</CodeGroup>
+
+### Layer Permissions
+
+Start with read-only auto-approvals, then gradually allow safe write operations:
+
+```markdown
+## Allowed Operations
+# Phase 1: Read-only operations (always safe)
+- File Read: `**/*`
+- Shell: `git status`, `git diff`, `git log`
+
+# Phase 2: Test files (low risk)
+- File Write: `test/**/*_test.exs`
+
+# Phase 3: Implementation files (after trust is built)
+- File Edit: `lib/myapp/**/*.ex`
+```
+
+### Version Control Your LOOM.md
+
+Commit `LOOM.md` to your repository so:
+- Rules are shared across the team
+- Changes to rules are tracked and reviewed
+- New contributors automatically get project conventions
+
+```bash
+git add LOOM.md
+git commit -m "Add Loom project rules"
+```
+
+## Example: Testing Workflow
+
+Here's a LOOM.md that enforces a test-driven workflow:
+
+```markdown
+## Rules
+- Write tests BEFORE implementation
+- Run tests after every code change
+- Keep test coverage above 80%
+- Use descriptive test names that explain the behavior being tested
+
+## Allowed Operations
+- Shell: `mix test`, `mix test.coverage`
+- File Write: `test/**/*_test.exs`
+- File Edit: `lib/**/*.ex`, `test/**/*.exs`
+
+## Denied Operations
+- Shell: `mix test --only skip`
+```
+
+## Example: Security-Focused
+
+For projects with strict security requirements:
+
+```markdown
+## Rules
+- Never log sensitive data (passwords, tokens, API keys)
+- Always validate user input with Ecto changesets
+- Use parameterized queries - never string interpolation in SQL
+- Require authentication for all non-public routes
+
+## Allowed Operations
+- File Read: `lib/**`, `test/**`
+- File Edit: `lib/myapp/controllers/**`, `lib/myapp/live/**`
+
+## Denied Operations
+- File Write: `config/**`, `priv/cert/**`, `.env*`
+- File Edit: `lib/myapp/auth/**`, `lib/myapp/accounts/**`
+- Shell: `mix phx.gen.secret`, `openssl`
+```
+
+## Troubleshooting
+
+### Rules Not Being Applied
+
+Check that:
+1. The file is named exactly `LOOM.md` (or `.loom.md`, `loom.md`)
+2. It's in the project root directory
+3. Section headings use `##` (not `#` or `###`)
+4. Rules are formatted as bullet points starting with `-`
+
+### Permissions Not Working
+
+Allowed operations use different matching strategies:
+- **Shell**: Prefix matching (`git` matches `git status`)
+- **File paths**: Glob patterns (`lib/**/*.ex` matches `lib/myapp/foo.ex`)
+
+Test your patterns:
+
+```elixir
+# Check if a pattern matches
+String.starts_with?("git status", "git")  # true for shell
+"lib/myapp/foo.ex" |> Path.wildcard("lib/**/*.ex")  # for files
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Configure models, permissions, and context budgets
+  </Card>
+  <Card title="Model Selection" icon="brain" href="/guides/model-selection">
+    Choose the right models for your workflow
+  </Card>
+</CardGroup>

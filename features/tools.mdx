@@ -1,0 +1,511 @@
+---
+title: "Built-in Tools"
+description: "AI-powered tools for code reading, editing, and execution"
+icon: "wrench"
+---
+
+Loom's AI assistant uses a suite of built-in tools to interact with your codebase. These tools enable file manipulation, code search, command execution, and more.
+
+## Tool Categories
+
+<CardGroup cols={3}>
+  <Card title="Read Tools" icon="eye" color="#10b981">
+    Safe, read-only operations:
+    - file_read
+    - content_search
+    - file_search
+    - directory_list
+  </Card>
+  
+  <Card title="Write Tools" icon="pen" color="#f59e0b">
+    File modification operations:
+    - file_write
+    - file_edit
+  </Card>
+  
+  <Card title="Execute Tools" icon="play" color="#ef4444">
+    Command execution:
+    - shell
+    - git
+  </Card>
+</CardGroup>
+
+## File Read Tools
+
+### file_read
+
+Reads a file and returns its contents with line numbers.
+
+<ParamField path="file_path" type="string" required>
+  Path to the file relative to project root
+</ParamField>
+
+<ParamField path="offset" type="integer">
+  Line number to start reading from (1-based)
+</ParamField>
+
+<ParamField path="limit" type="integer">
+  Maximum number of lines to return
+</ParamField>
+
+**Example usage**:
+```elixir
+# Read entire file
+file_read(file_path: "lib/user.ex")
+
+# Read lines 50-100
+file_read(file_path: "lib/user.ex", offset: 50, limit: 50)
+```
+
+**Output format**:
+```
+lib/user.ex (150 lines total, showing 50)
+    50	def authenticate(email, password) do
+    51	  # implementation
+    52	end
+```
+
+Line numbers are formatted with consistent width for easy reference.
+
+### content_search
+
+Searches file contents using regular expressions.
+
+<ParamField path="pattern" type="string" required>
+  Regex pattern to search for
+</ParamField>
+
+<ParamField path="include" type="string">
+  File pattern to filter (e.g., "*.ex", "*.{js,ts}")
+</ParamField>
+
+<ParamField path="path" type="string">
+  Directory to search in (defaults to project root)
+</ParamField>
+
+**Example usage**:
+```elixir
+# Find all TODO comments in Elixir files
+content_search(
+  pattern: "TODO:",
+  include: "*.ex"
+)
+
+# Find function definitions
+content_search(
+  pattern: "def\\s+\\w+",
+  path: "lib/core"
+)
+```
+
+**Output format**:
+```
+lib/user.ex:42:    # TODO: Add validation
+lib/auth.ex:18:    # TODO: Implement refresh tokens
+```
+
+Results show file path, line number, and matching line content.
+
+### file_search
+
+Finds files by name pattern using glob matching.
+
+<ParamField path="pattern" type="string" required>
+  Glob pattern to match files (e.g., "**/*.ex")
+</ParamField>
+
+<ParamField path="path" type="string">
+  Directory to search in
+</ParamField>
+
+**Example usage**:
+```elixir
+# Find all test files
+file_search(pattern: "**/*_test.exs")
+
+# Find JavaScript files in specific directory
+file_search(
+  pattern: "**/*.js",
+  path: "assets"
+)
+```
+
+**Output**: List of matching file paths sorted by modification time.
+
+### directory_list
+
+Lists directory contents.
+
+<ParamField path="path" type="string" required>
+  Directory path to list (relative to project root)
+</ParamField>
+
+<ParamField path="recursive" type="boolean">
+  List subdirectories recursively
+</ParamField>
+
+**Example usage**:
+```elixir
+# List files in lib/
+directory_list(path: "lib")
+
+# Recursive listing
+directory_list(
+  path: "lib",
+  recursive: true
+)
+```
+
+## File Write Tools
+
+### file_write
+
+Creates or overwrites a file with new content.
+
+<ParamField path="file_path" type="string" required>
+  Path to the file (relative to project root)
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  Content to write to the file
+</ParamField>
+
+<Warning>
+  This tool overwrites existing files. Use with caution.
+</Warning>
+
+**Example usage**:
+```elixir
+file_write(
+  file_path: "lib/new_module.ex",
+  content: """
+  defmodule MyApp.NewModule do
+    def hello, do: :world
+  end
+  """
+)
+```
+
+### file_edit
+
+Performs exact string replacements in a file.
+
+<ParamField path="file_path" type="string" required>
+  Path to the file to edit
+</ParamField>
+
+<ParamField path="old_string" type="string" required>
+  Exact text to find and replace (must match exactly including whitespace)
+</ParamField>
+
+<ParamField path="new_string" type="string" required>
+  Text to replace it with
+</ParamField>
+
+<ParamField path="replace_all" type="boolean" default="false">
+  Replace all occurrences. If false, old_string must appear exactly once.
+</ParamField>
+
+**Example usage**:
+```elixir
+file_edit(
+  file_path: "lib/user.ex",
+  old_string: "def authenticate(email, password) do\n  # TODO\nend",
+  new_string: "def authenticate(email, password) do\n  User.verify_credentials(email, password)\nend"
+)
+```
+
+**Validation**:
+- If `old_string` not found: Error with helpful message
+- If multiple matches and `replace_all: false`: Error asking for more context
+- Successful: Returns count of replacements made
+
+<Tip>
+  **Indentation matters!** Make sure your `old_string` matches the exact indentation in the file.
+</Tip>
+
+## Execute Tools
+
+### shell
+
+Executes shell commands in the project directory.
+
+<ParamField path="command" type="string" required>
+  Shell command to execute
+</ParamField>
+
+<ParamField path="timeout" type="integer" default="30000">
+  Timeout in milliseconds
+</ParamField>
+
+<Warning>
+  Commands run with your user permissions. Be careful with destructive operations.
+</Warning>
+
+**Example usage**:
+```elixir
+# Run tests
+shell(command: "mix test")
+
+# Check git status
+shell(command: "git status")
+
+# Install dependencies
+shell(command: "mix deps.get")
+```
+
+**Output format**:
+```
+Exit code: 0
+[command stdout/stderr output]
+```
+
+Output is truncated at 10,000 characters. Full output is available in the terminal tab.
+
+### git
+
+Executes git commands (convenience wrapper around shell).
+
+<ParamField path="command" type="string" required>
+  Git subcommand and arguments
+</ParamField>
+
+**Example usage**:
+```elixir
+# View changes
+git(command: "diff")
+
+# Create commit
+git(command: "commit -m 'Add feature'")
+
+# Check branch
+git(command: "branch --show-current")
+```
+
+## Decision Tools
+
+### decision_log
+
+Logs important decisions during code generation.
+
+<ParamField path="decision" type="string" required>
+  Description of the decision made
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation of why this decision was made
+</ParamField>
+
+**Example usage**:
+```elixir
+decision_log(
+  decision: "Use GenServer for user cache",
+  rationale: "Need process isolation and state management for cache invalidation"
+)
+```
+
+Decisions are stored and can be queried later.
+
+### decision_query
+
+Queries logged decisions.
+
+<ParamField path="query" type="string" required>
+  Search query for decisions
+</ParamField>
+
+**Example usage**:
+```elixir
+decision_query(query: "cache")
+```
+
+Returns all decisions matching the query.
+
+## Advanced Tools
+
+### sub_agent
+
+Spawns a read-only search sub-agent for complex searches.
+
+<ParamField path="task" type="string" required>
+  Description of what to search for
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Directory to scope the search to
+</ParamField>
+
+**Example usage**:
+```elixir
+sub_agent(
+  task: "Find all authentication-related functions",
+  scope: "lib/core"
+)
+```
+
+The sub-agent:
+1. Uses a weaker/faster model (claude-haiku-4-5)
+2. Has access only to read tools
+3. Performs multiple search iterations
+4. Returns consolidated findings
+
+<Info>
+  Sub-agents are great for exploratory searches when you don't know exact file locations.
+</Info>
+
+**Max iterations**: 10
+
+**Available to sub-agent**:
+- file_read
+- file_search
+- content_search
+- directory_list
+
+### lsp_diagnostics
+
+Retrieves diagnostics from Language Server Protocol clients.
+
+<ParamField path="file_path" type="string">
+  Specific file to get diagnostics for
+</ParamField>
+
+**Example usage**:
+```elixir
+# Get all diagnostics
+lsp_diagnostics()
+
+# Get diagnostics for specific file
+lsp_diagnostics(file_path: "lib/user.ex")
+```
+
+**Output format**:
+```
+lib/user.ex:42:5: warning: unused variable "result"
+lib/auth.ex:18:12: error: undefined function validate/1
+```
+
+Requires LSP client to be configured in `.loom.toml`.
+
+## Tool Registry
+
+All tools are registered in `Loom.Tools.Registry`:
+
+```elixir
+Loom.Tools.Registry.all()
+# Returns: [Loom.Tools.FileRead, Loom.Tools.FileEdit, ...]
+
+Loom.Tools.Registry.definitions()
+# Returns: [%ReqLLM.Tool{name: "file_read", ...}, ...]
+
+Loom.Tools.Registry.find("file_read")
+# Returns: {:ok, Loom.Tools.FileRead}
+```
+
+### Executing Tools Directly
+
+```elixir
+Loom.Tools.Registry.execute(
+  "file_read",
+  %{file_path: "lib/user.ex"},
+  %{project_path: "/path/to/project"}
+)
+```
+
+## Tool Permissions
+
+Tools are categorized for permission management:
+
+- **Read tools**: Auto-approved by default
+- **Write tools**: Require explicit permission
+- **Execute tools**: Require explicit permission
+
+Configure in `.loom.toml`:
+
+```toml
+[permissions]
+auto_approve = [
+  "file_read",
+  "file_search",
+  "content_search",
+  "directory_list"
+]
+```
+
+See [Permissions](/features/permissions) for details.
+
+## Path Safety
+
+All tools validate paths to prevent directory traversal:
+
+```elixir
+# ✓ Valid
+file_read(file_path: "lib/user.ex")
+
+# ✗ Rejected (outside project)
+file_read(file_path: "../../etc/passwd")
+```
+
+Paths must be:
+- Relative to project root
+- Within project boundaries
+- No `..` traversal allowed outside project
+
+## Error Handling
+
+Tools return structured errors:
+
+```elixir
+{:error, "File not found: lib/missing.ex"}
+{:error, "old_string not found in file"}
+{:error, "Command timed out after 30000ms"}
+```
+
+The AI assistant receives these errors and can adjust its approach.
+
+## Custom Tools
+
+You can extend Loom with custom tools using the Jido.Action behavior:
+
+```elixir
+defmodule MyApp.CustomTool do
+  use Jido.Action,
+    name: "my_tool",
+    description: "Does something useful",
+    schema: [
+      param: [type: :string, required: true, doc: "Parameter description"]
+    ]
+
+  @impl true
+  def run(params, context) do
+    # Implementation
+    {:ok, %{result: "Success"}}
+  end
+end
+```
+
+Register in the tool registry:
+
+```elixir
+# In your config or application startup
+Loom.Tools.Registry.register(MyApp.CustomTool)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Permissions" icon="shield" href="/features/permissions">
+    Configure which tools require approval
+  </Card>
+  
+  <Card title="MCP" icon="plug" href="/features/mcp">
+    Connect external tools via Model Context Protocol
+  </Card>
+  
+  <Card title="LSP" icon="code" href="/features/lsp">
+    Integrate language servers for diagnostics
+  </Card>
+  
+  <Card title="CLI" icon="terminal" href="/features/cli">
+    Use tools from the command line
+  </Card>
+</CardGroup>

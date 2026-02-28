@@ -1,0 +1,530 @@
+---
+title: "Model Context Protocol (MCP)"
+description: "Connect external tools and extend Loom's capabilities"
+icon: "plug"
+---
+
+Loom supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), enabling bidirectional integration:
+
+1. **MCP Server**: Expose Loom's tools to external editors (VS Code, Cursor, Zed)
+2. **MCP Client**: Connect to external MCP servers and use their tools in Loom
+
+## MCP Server
+
+Loom can act as an MCP server, exposing its built-in tools to any MCP-compatible client.
+
+### Enable the Server
+
+In your `.loom.toml`:
+
+```toml
+[mcp]
+server_enabled = true
+```
+
+### What's Exposed
+
+When enabled, Loom publishes 11 tools via MCP:
+
+<CardGroup cols={2}>
+  <Card title="File Operations" icon="file">
+    - file_read
+    - file_write
+    - file_edit
+  </Card>
+  
+  <Card title="Search" icon="magnifying-glass">
+    - file_search
+    - content_search
+    - directory_list
+  </Card>
+  
+  <Card title="Execution" icon="terminal">
+    - shell
+    - git
+  </Card>
+  
+  <Card title="Advanced" icon="brain">
+    - decision_log
+    - decision_query
+    - sub_agent
+  </Card>
+</CardGroup>
+
+### Server Configuration
+
+The MCP server is implemented using `Jido.MCP.Server`:
+
+```elixir
+defmodule Loom.MCP.Server do
+  use Jido.MCP.Server,
+    name: "loom",
+    version: "0.1.0",
+    publish: %{
+      tools: [
+        Loom.Tools.FileRead,
+        Loom.Tools.FileWrite,
+        # ... all 11 tools
+      ],
+      resources: [],
+      prompts: []
+    }
+end
+```
+
+### Transport Options
+
+Loom's MCP server supports two transports:
+
+#### stdio (Default)
+
+Communicate via standard input/output:
+
+```elixir
+Loom.MCP.Server.child_specs(transport: :stdio)
+```
+
+Best for:
+- Desktop editors (VS Code, Cursor)
+- Command-line tools
+- Local integrations
+
+#### Streamable HTTP
+
+Communicate via Server-Sent Events (SSE):
+
+```elixir
+Loom.MCP.Server.child_specs(
+  transport: {:streamable_http, port: 3000, path: "/mcp"}
+)
+```
+
+Best for:
+- Web-based editors
+- Remote access
+- Multi-client scenarios
+
+### Connecting from Editors
+
+#### VS Code / Cursor
+
+Add to your editor's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "loom": {
+      "command": "loom",
+      "args": ["mcp", "server"],
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+#### Zed
+
+Add to `.zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "loom": {
+      "command": "loom",
+      "args": ["mcp", "server"]
+    }
+  }
+}
+```
+
+<Info>
+  Loom must be installed and available in your PATH for stdio connections.
+</Info>
+
+### Usage in Editors
+
+Once connected, use Loom's tools directly in your editor's AI assistant:
+
+```
+// In VS Code Copilot Chat or Cursor
+Read the user.ex file using loom's file_read tool
+Search for TODO comments using content_search
+Edit the authentication logic using file_edit
+```
+
+The editor's AI will invoke Loom's MCP server to execute these operations.
+
+## MCP Client
+
+Loom can connect to external MCP servers and use their tools.
+
+### Configure Servers
+
+In `.loom.toml`, list external MCP servers:
+
+```toml
+[mcp]
+servers = [
+  # Local stdio server
+  { name = "tidewave", command = "mix", args = ["tidewave.server"] },
+  
+  # HTTP server
+  { name = "hexdocs", url = "http://localhost:3001/sse" }
+]
+```
+
+### Transport Types
+
+#### stdio Server
+
+```toml
+{ name = "my_server", command = "node", args = ["server.js"] }
+```
+
+Loom will:
+1. Spawn the process
+2. Communicate via stdin/stdout
+3. Use JSON-RPC 2.0 protocol
+
+#### HTTP Server
+
+```toml
+{ name = "remote_api", url = "https://api.example.com/mcp" }
+```
+
+Loom will:
+1. Connect via Server-Sent Events (SSE)
+2. Send requests via POST
+3. Receive responses via SSE stream
+
+### Tool Discovery
+
+When Loom starts, it:
+
+<Steps>
+  <Step title="Connect to Servers">
+    Establishes connection to all configured MCP servers.
+  </Step>
+  
+  <Step title="List Tools">
+    Calls `tools/list` on each server to discover available tools.
+  </Step>
+  
+  <Step title="Generate Proxies">
+    Creates Jido.Action proxy modules for each tool:
+    
+    ```elixir
+    # External tool "search" from "hexdocs" server
+    # becomes:
+    Mcp.Hexdocs.Search
+    ```
+  </Step>
+  
+  <Step title="Register Tools">
+    Adds proxy tools to the tool registry, making them available to the AI.
+  </Step>
+</Steps>
+
+### Using External Tools
+
+Once connected, external tools are available just like built-in tools:
+
+```
+You: Search Elixir documentation for GenServer
+
+Loom: [Uses mcp_hexdocs.search tool]
+```
+
+The AI automatically:
+1. Detects relevant tools from their descriptions
+2. Calls the external MCP server
+3. Receives results
+4. Incorporates findings into its response
+
+### Client API
+
+#### List Available Tools
+
+```elixir
+# All external tools
+Loom.MCP.Client.external_tools()
+# => [Mcp.Hexdocs.Search, Mcp.Tidewave.Deploy, ...]
+
+# Tools from specific server
+Loom.MCP.Client.tools_for(:hexdocs)
+# => [Mcp.Hexdocs.Search, Mcp.Hexdocs.Lookup, ...]
+```
+
+#### Check Server Status
+
+```elixir
+Loom.MCP.Client.status()
+# => %{
+#   hexdocs: %{
+#     config: %{url: "..."},
+#     status: :connected,
+#     tool_count: 3
+#   },
+#   tidewave: %{
+#     config: %{command: "mix", args: [...]},
+#     status: :error,
+#     tool_count: 0
+#   }
+# }
+```
+
+#### Refresh Tools
+
+```elixir
+# Refresh all servers
+Loom.MCP.Client.refresh()
+
+# Refresh specific server
+Loom.MCP.Client.refresh(:hexdocs)
+```
+
+Useful after server updates or reconnection.
+
+## Protocol Details
+
+### Message Format
+
+MCP uses JSON-RPC 2.0 over the transport layer:
+
+#### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "file_read",
+    "arguments": {
+      "file_path": "lib/user.ex"
+    }
+  }
+}
+```
+
+#### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "defmodule User do\n  # ..."
+      }
+    ]
+  }
+}
+```
+
+### Tool Schema
+
+External tools are described using JSON Schema:
+
+```json
+{
+  "name": "search",
+  "description": "Search documentation",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query"
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+Loom converts this to a Jido.Action with NimbleOptions schema.
+
+## Example MCP Servers
+
+### HexDocs Server
+
+Provides Elixir/Hex documentation search:
+
+```toml
+[mcp]
+servers = [
+  { name = "hexdocs", url = "https://hexdocs-mcp.fly.dev/sse" }
+]
+```
+
+Tools:
+- `search`: Full-text search across packages
+- `lookup`: Get docs for specific function
+- `packages`: List popular packages
+
+### Tidewave Server
+
+Local development tools:
+
+```toml
+[mcp]
+servers = [
+  { name = "tidewave", command = "mix", args = ["tidewave.server"] }
+]
+```
+
+Tools:
+- `deploy`: Deploy to staging/production
+- `logs`: Fetch application logs
+- `metrics`: Get performance metrics
+
+### Filesystem Server
+
+Extended file operations:
+
+```toml
+[mcp]
+servers = [
+  { name = "fs", command = "npx", args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"] }
+]
+```
+
+Tools:
+- `read_file`
+- `write_file`
+- `list_directory`
+- `search_files`
+
+<Info>
+  MCP servers from different ecosystems (Node.js, Python, etc.) work seamlessly with Loom.
+</Info>
+
+## Building an MCP Server
+
+### For Loom
+
+Create a new Elixir project:
+
+```elixir
+defmodule MyApp.MCPServer do
+  use Jido.MCP.Server,
+    name: "myapp",
+    version: "1.0.0",
+    publish: %{
+      tools: [
+        MyApp.Tools.CustomTool
+      ]
+    }
+end
+```
+
+Define your tool:
+
+```elixir
+defmodule MyApp.Tools.CustomTool do
+  use Jido.Action,
+    name: "custom_tool",
+    description: "Does something useful",
+    schema: [
+      param: [type: :string, required: true]
+    ]
+
+  @impl true
+  def run(params, _context) do
+    {:ok, %{result: "Success: #{params.param}"}}
+  end
+end
+```
+
+Run the server:
+
+```elixir
+# In your application supervisor
+children = [
+  {MyApp.MCPServer, transport: :stdio}
+]
+```
+
+### Using Other Languages
+
+MCP servers can be written in any language. Popular SDKs:
+
+- **Python**: `mcp` package
+- **TypeScript**: `@modelcontextprotocol/sdk`
+- **Go**: Community implementations
+
+See [modelcontextprotocol.io](https://modelcontextprotocol.io) for guides.
+
+## Security Considerations
+
+<Warning>
+  **Untrusted Servers**: Only connect to MCP servers you trust. They can execute code and access your project.
+</Warning>
+
+<Warning>
+  **Exposed Tools**: When running Loom as an MCP server, ensure proper authentication if exposing over HTTP.
+</Warning>
+
+<Tip>
+  **Permissions Apply**: External MCP tools follow the same permission system as built-in tools.
+</Tip>
+
+## Troubleshooting
+
+### Server Not Connecting
+
+**Check logs**:
+```bash
+tail -f log/dev.log | grep MCP
+```
+
+Common issues:
+- Command not found (stdio)
+- URL unreachable (HTTP)
+- Port conflicts
+
+### No Tools Discovered
+
+**Verify server response**:
+```elixir
+Loom.MCP.Client.status()
+```
+
+If `tool_count: 0`, the server may:
+- Not implement `tools/list`
+- Return malformed schemas
+- Require initialization parameters
+
+### Tool Execution Fails
+
+**Check the tool schema** matches what the server expects.
+
+**Verify parameters** are correctly formatted:
+```elixir
+# Loom converts to JSON, so use JSON-compatible types
+%{query: "search term"}  # ✓
+%{query: ~r/regex/}       # ✗
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Learn about Loom's built-in tools exposed via MCP
+  </Card>
+  
+  <Card title="LSP" icon="code" href="/features/lsp">
+    Integrate Language Server Protocol for diagnostics
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Configure MCP servers in .loom.toml
+  </Card>
+  
+  <Card title="MCP Spec" icon="book" href="https://modelcontextprotocol.io">
+    Read the full MCP specification
+  </Card>
+</CardGroup>

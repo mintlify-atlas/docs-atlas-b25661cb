@@ -1,0 +1,425 @@
+---
+title: MCP Server API
+description: Expose Loom's tools to external editors via the Model Context Protocol
+---
+
+The MCP Server API enables Loom to function as a [Model Context Protocol](https://modelcontextprotocol.io) server, exposing its built-in tools to external editors and AI assistants like VS Code, Cursor, Zed, and Claude Desktop.
+
+## Overview
+
+The `Loom.MCP.Server` module uses the `jido_mcp` library to implement the MCP protocol. It publishes all 11 core Loom tools, allowing external clients to discover and invoke them through a standardized interface.
+
+## Configuration
+
+Enable the MCP server in your `.loom.toml` configuration file:
+
+```toml
+[mcp]
+server_enabled = true
+```
+
+The server starts automatically during application boot if enabled.
+
+## Published Tools
+
+The MCP server exposes the following Loom tools:
+
+1. **FileRead** - Read file contents
+2. **FileWrite** - Write or create files
+3. **FileEdit** - Edit files with find-replace
+4. **FileSearch** - Search for files by pattern
+5. **ContentSearch** - Search file contents with regex
+6. **DirectoryList** - List directory contents
+7. **Shell** - Execute shell commands
+8. **Git** - Run git operations
+9. **DecisionLog** - Log AI decisions to the graph
+10. **DecisionQuery** - Query the decision graph
+11. **SubAgent** - Spawn sub-agents for complex tasks
+
+<Info>
+External MCP clients can discover all available tools and their schemas through the standard MCP `tools/list` request.
+</Info>
+
+## API Reference
+
+### enabled?/0
+
+Check if the MCP server should be started based on configuration.
+
+```elixir
+if Loom.MCP.Server.enabled?() do
+  IO.puts("MCP server is enabled")
+else
+  IO.puts("MCP server is disabled")
+end
+```
+
+<ResponseField name="enabled" type="boolean()">
+  Returns `true` if `mcp.server_enabled = true` in `.loom.toml`, otherwise `false`.
+</ResponseField>
+
+### child_specs/1
+
+Generate child specs for the MCP server processes to include in a supervision tree.
+
+```elixir
+children = Loom.MCP.Server.child_specs(
+  transport: :stdio
+)
+
+Supervisor.start_link(children, strategy: :one_for_one)
+```
+
+<ParamField path="opts" type="keyword()" default="[]">
+  Server options:
+  - `transport: :stdio | {:streamable_http, opts}` - Communication transport (default: `:stdio`)
+</ParamField>
+
+<ResponseField name="specs" type="[Supervisor.child_spec()]">
+  List of child specifications for the MCP server processes.
+</ResponseField>
+
+<Note>
+The Loom application automatically includes these child specs when `enabled?/0` returns `true`. You typically don't need to call `child_specs/1` directly.
+</Note>
+
+## Transport Modes
+
+### STDIO Transport
+
+The default transport mode communicates via standard input/output. This is the standard mode for MCP servers.
+
+```elixir
+# In your supervision tree (done automatically by Loom)
+Loom.MCP.Server.child_specs(transport: :stdio)
+```
+
+**Use STDIO when:**
+- Integrating with editors that spawn MCP servers as child processes
+- Using Claude Desktop or similar MCP clients
+- Following the standard MCP server pattern
+
+### HTTP Transport
+
+Streamable HTTP transport enables HTTP-based communication.
+
+```elixir
+Loom.MCP.Server.child_specs(
+  transport: {:streamable_http, port: 4000}
+)
+```
+
+**Use HTTP when:**
+- Building web-based integrations
+- Connecting from remote clients
+- Requiring RESTful access patterns
+
+## Integration Examples
+
+### Claude Desktop
+
+Add Loom as an MCP server in your Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "loom": {
+      "command": "loom",
+      "args": ["mcp"],
+      "env": {
+        "LOOM_PROJECT_PATH": "/path/to/your/project"
+      }
+    }
+  }
+}
+```
+
+### VS Code (Cline Extension)
+
+Configure Loom in the Cline MCP settings:
+
+```json
+{
+  "loom": {
+    "command": "loom",
+    "args": ["mcp"],
+    "cwd": "/path/to/your/project"
+  }
+}
+```
+
+### Cursor
+
+Add to your Cursor MCP server configuration:
+
+```json
+{
+  "servers": {
+    "loom": {
+      "command": "loom mcp",
+      "projectPath": "/path/to/your/project"
+    }
+  }
+}
+```
+
+### Zed
+
+Configure in Zed's MCP settings:
+
+```json
+{
+  "context_servers": {
+    "loom": {
+      "command": {
+        "path": "loom",
+        "args": ["mcp"]
+      }
+    }
+  }
+}
+```
+
+## MCP Protocol Details
+
+### Capabilities
+
+Loom's MCP server declares the following capabilities:
+
+```json
+{
+  "capabilities": {
+    "tools": {
+      "listChanged": false
+    }
+  },
+  "serverInfo": {
+    "name": "loom",
+    "version": "0.1.0"
+  }
+}
+```
+
+### Tool Discovery
+
+Clients can request the tool list:
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "file_read",
+        "description": "Read file contents",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string", "description": "File path to read"}
+          },
+          "required": ["path"]
+        }
+      },
+      // ... other tools
+    ]
+  }
+}
+```
+
+### Tool Invocation
+
+Clients invoke tools using the `tools/call` method:
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "file_read",
+    "arguments": {
+      "path": "lib/my_app.ex"
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "defmodule MyApp do\n  # ...\nend"
+      }
+    ]
+  }
+}
+```
+
+## Error Handling
+
+MCP errors follow the JSON-RPC 2.0 error format:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": {
+      "details": "Path is required"
+    }
+  }
+}
+```
+
+### Common Error Codes
+
+| Code | Meaning | Description |
+|------|---------|-------------|
+| -32700 | Parse error | Invalid JSON |
+| -32600 | Invalid request | Malformed request object |
+| -32601 | Method not found | Unknown method |
+| -32602 | Invalid params | Invalid method parameters |
+| -32603 | Internal error | Server-side error |
+
+## Security Considerations
+
+<Warning>
+MCP servers run with the same file system permissions as the Loom process. When exposing Loom via MCP:
+
+1. **STDIO mode**: Only accessible to the parent process (most secure)
+2. **HTTP mode**: Accessible over the network (requires additional security)
+
+For HTTP transport:
+- Use authentication middleware
+- Restrict to localhost or trusted networks
+- Consider TLS for remote access
+- Implement rate limiting for public endpoints
+</Warning>
+
+## Extending the Server
+
+You can create custom MCP servers with different tool sets:
+
+```elixir
+defmodule MyApp.CustomMCP do
+  use Jido.MCP.Server,
+    name: "my-custom-server",
+    version: "1.0.0",
+    publish: %{
+      tools: [
+        MyApp.CustomTool,
+        Loom.Tools.FileRead,
+        Loom.Tools.ContentSearch
+      ],
+      resources: [],
+      prompts: []
+    }
+
+  def child_specs(opts \\ []) do
+    Jido.MCP.Server.server_children(__MODULE__, opts)
+  end
+end
+```
+
+## Monitoring
+
+Monitor MCP server activity through Loom's telemetry events:
+
+```elixir
+:telemetry.attach(
+  "mcp-monitor",
+  [:jido_mcp, :tool, :execute],
+  fn event, measurements, metadata, _config ->
+    IO.puts("MCP tool called: #{metadata.tool_name}")
+    IO.puts("Duration: #{measurements.duration}ms")
+  end,
+  nil
+)
+```
+
+## Troubleshooting
+
+### Server Not Starting
+
+1. Check configuration:
+   ```elixir
+   Loom.MCP.Server.enabled?()
+   # Should return true
+   ```
+
+2. Verify `.loom.toml` contains:
+   ```toml
+   [mcp]
+   server_enabled = true
+   ```
+
+3. Check application logs for startup errors
+
+### Tool Invocation Fails
+
+1. Verify tool name matches exactly (case-sensitive)
+2. Check parameter schema matches tool requirements
+3. Review error response for validation details
+
+### Connection Issues (HTTP Mode)
+
+1. Verify port is not already in use
+2. Check firewall settings
+3. Ensure HTTP transport is configured in `child_specs/1`
+
+## Complete Example
+
+```elixir
+# In your application supervisor
+defmodule MyApp.Application do
+  use Application
+
+  def start(_type, _args) do
+    children = [
+      # ... other children
+    ] ++ mcp_children()
+
+    Supervisor.start_link(children, strategy: :one_for_one)
+  end
+
+  defp mcp_children do
+    if Loom.MCP.Server.enabled?() do
+      Loom.MCP.Server.child_specs(transport: :stdio)
+    else
+      []
+    end
+  end
+end
+```
+
+## Resources
+
+- [Model Context Protocol Specification](https://modelcontextprotocol.io/specification)
+- [jido_mcp Documentation](https://hexdocs.pm/jido_mcp)
+- [MCP Server Examples](https://github.com/modelcontextprotocol/servers)
+
+## Type Specifications
+
+```elixir
+@type transport :: :stdio | {:streamable_http, keyword()}
+@type child_spec :: Supervisor.child_spec()
+```

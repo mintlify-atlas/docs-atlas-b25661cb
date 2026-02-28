@@ -1,0 +1,548 @@
+---
+title: Shell & Git
+description: Execute shell commands and perform git operations in the project
+---
+
+Loom provides tools for executing shell commands and performing git operations, enabling agents to run tests, build projects, and manage version control.
+
+## shell
+
+Executes shell commands in the project directory and returns stdout, stderr, and exit code.
+
+<ParamField path="command" type="string" required>
+  The shell command to execute. Runs in the project directory.
+</ParamField>
+
+<ParamField path="timeout" type="integer" default="30000">
+  Timeout in milliseconds. Commands that exceed this duration are terminated.
+</ParamField>
+
+### Returns
+
+Success response (exit code 0):
+```
+Exit code: 0
+mix test
+....
+
+Finished in 0.5 seconds
+4 tests, 0 failures
+```
+
+Error response (non-zero exit code):
+```
+Exit code: 1
+mix test
+.F..
+
+1) test creates user (MyApp.UserTest)
+   ...
+```
+
+<Note>
+  Both stdout and stderr are captured and combined in the output. The exit code determines success vs. error response.
+</Note>
+
+### Output Limits
+
+<Warning>
+  Output is truncated at **10,000 characters**. If the command produces more output:
+  ```
+  Exit code: 0
+  [first 10,000 characters of output]
+  ... (5432 characters truncated)
+  ```
+</Warning>
+
+### Execution Details
+
+<AccordionGroup>
+  <Accordion title="Working Directory">
+    Commands always run in the project root directory. No need to `cd` before running commands.
+  </Accordion>
+
+  <Accordion title="Environment">
+    Commands inherit the system environment. Mix, npm, cargo, and other tools work as expected.
+  </Accordion>
+
+  <Accordion title="Port-Based Execution">
+    Uses Erlang ports (not a sandboxed shell) to execute real system commands. This allows running build tools, test suites, and other native commands.
+  </Accordion>
+</AccordionGroup>
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Run tests
+{:ok, result} = Loom.Tools.Shell.run(
+  %{command: "mix test"},
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir Check format
+Loom.Tools.Shell.run(
+  %{command: "mix format --check-formatted"},
+  context
+)
+```
+
+```elixir Build project with timeout
+Loom.Tools.Shell.run(
+  %{
+    command: "mix compile",
+    timeout: 60000  # 1 minute
+  },
+  context
+)
+```
+
+```elixir Run custom scripts
+Loom.Tools.Shell.run(
+  %{command: "./scripts/setup.sh"},
+  context
+)
+```
+
+```elixir Check dependencies
+Loom.Tools.Shell.run(
+  %{command: "mix deps.get"},
+  context
+)
+```
+</CodeGroup>
+
+### Common Commands
+
+<CardGroup cols={2}>
+  <Card title="Elixir" icon="fire">
+    ```bash
+    mix test
+    mix compile
+    mix format --check-formatted
+    mix deps.get
+    mix dialyzer
+    ```
+  </Card>
+
+  <Card title="Node.js" icon="node-js">
+    ```bash
+    npm test
+    npm run build
+    npm install
+    npm run lint
+    ```
+  </Card>
+
+  <Card title="Rust" icon="rust">
+    ```bash
+    cargo test
+    cargo build --release
+    cargo clippy
+    cargo fmt -- --check
+    ```
+  </Card>
+
+  <Card title="Python" icon="python">
+    ```bash
+    pytest
+    python -m unittest
+    pip install -r requirements.txt
+    black --check .
+    ```
+  </Card>
+</CardGroup>
+
+<Tip>
+  Use shell for running tests and builds, but prefer specific tools like `git` for version control operations.
+</Tip>
+
+---
+
+## git
+
+Performs git operations using the git_cli library. Provides structured access to common git commands.
+
+<ParamField path="operation" type="string" required>
+  The git operation to perform. Supported operations:
+  - `status` - View working tree status
+  - `diff` - Show changes
+  - `commit` - Create a commit
+  - `log` - View commit history
+  - `add` - Stage files
+  - `reset` - Unstage files
+  - `stash` - Stash changes
+</ParamField>
+
+<ParamField path="args" type="map">
+  Operation-specific arguments (see below)
+</ParamField>
+
+### Operations
+
+#### status
+
+View the current git status.
+
+```elixir
+{:ok, result} = Loom.Tools.Git.run(
+  %{operation: "status"},
+  context
+)
+```
+
+**Returns:**
+```
+Git status:
+ M lib/loom/router.ex
+?? new_file.ex
+```
+
+Or if clean:
+```
+Working tree clean — no changes.
+```
+
+#### diff
+
+Show changes between commits, working tree, and staging area.
+
+<ParamField path="args.staged" type="boolean" default="false">
+  Show staged changes (equivalent to `git diff --cached`)
+</ParamField>
+
+<ParamField path="args.file" type="string">
+  Limit diff to specific file
+</ParamField>
+
+<CodeGroup>
+```elixir Unstaged changes
+Loom.Tools.Git.run(
+  %{operation: "diff"},
+  context
+)
+```
+
+```elixir Staged changes
+Loom.Tools.Git.run(
+  %{
+    operation: "diff",
+    args: %{staged: true}
+  },
+  context
+)
+```
+
+```elixir Specific file
+Loom.Tools.Git.run(
+  %{
+    operation: "diff",
+    args: %{file: "lib/my_app/router.ex"}
+  },
+  context
+)
+```
+</CodeGroup>
+
+**Returns:**
+```diff
+diff --git a/lib/loom/router.ex b/lib/loom/router.ex
+index 1234567..abcdefg 100644
+--- a/lib/loom/router.ex
++++ b/lib/loom/router.ex
+@@ -10,6 +10,7 @@
+   plug :match
++  plug :auth
+   plug :dispatch
+```
+
+#### commit
+
+Create a new commit. Optionally stage files before committing.
+
+<ParamField path="args.message" type="string" required>
+  Commit message
+</ParamField>
+
+<ParamField path="args.files" type="list">
+  Files to stage before committing (optional)
+</ParamField>
+
+<CodeGroup>
+```elixir Commit staged changes
+Loom.Tools.Git.run(
+  %{
+    operation: "commit",
+    args: %{message: "Add authentication middleware"}
+  },
+  context
+)
+```
+
+```elixir Stage and commit
+Loom.Tools.Git.run(
+  %{
+    operation: "commit",
+    args: %{
+      message: "Add user controller",
+      files: ["lib/my_app/controllers/user_controller.ex"]
+    }
+  },
+  context
+)
+```
+</CodeGroup>
+
+**Returns:**
+```
+Commit created:
+[main 1234567] Add authentication middleware
+ 1 file changed, 5 insertions(+)
+```
+
+#### log
+
+View commit history.
+
+<ParamField path="args.count" type="integer" default="10">
+  Number of commits to show
+</ParamField>
+
+<ParamField path="args.format" type="string" default="%h %s (%an, %ar)">
+  Git log format string. Uses git's `--format` syntax.
+</ParamField>
+
+<CodeGroup>
+```elixir Recent commits (default)
+Loom.Tools.Git.run(
+  %{operation: "log"},
+  context
+)
+```
+
+```elixir Custom count
+Loom.Tools.Git.run(
+  %{
+    operation: "log",
+    args: %{count: 5}
+  },
+  context
+)
+```
+
+```elixir Custom format
+Loom.Tools.Git.run(
+  %{
+    operation: "log",
+    args: %{
+      count: 10,
+      format: "%h %s%n%b%n"
+    }
+  },
+  context
+)
+```
+</CodeGroup>
+
+**Returns:**
+```
+Recent commits:
+1234567 Add authentication middleware (Alice, 2 hours ago)
+abcdefg Fix user validation (Bob, 1 day ago)
+9876543 Initial commit (Alice, 2 days ago)
+```
+
+#### add
+
+Stage files for commit.
+
+<ParamField path="args.files" type="list" required>
+  List of file paths to stage
+</ParamField>
+
+```elixir
+Loom.Tools.Git.run(
+  %{
+    operation: "add",
+    args: %{
+      files: [
+        "lib/my_app/router.ex",
+        "test/my_app/router_test.exs"
+      ]
+    }
+  },
+  context
+)
+```
+
+**Returns:**
+```
+Staged 2 file(s): lib/my_app/router.ex, test/my_app/router_test.exs
+```
+
+#### reset
+
+Unstage files (soft reset only, never destructive).
+
+<ParamField path="args.files" type="list" required>
+  List of file paths to unstage
+</ParamField>
+
+```elixir
+Loom.Tools.Git.run(
+  %{
+    operation: "reset",
+    args: %{
+      files: ["lib/my_app/router.ex"]
+    }
+  },
+  context
+)
+```
+
+**Returns:**
+```
+Unstaged 1 file(s): lib/my_app/router.ex
+```
+
+<Warning>
+  This tool only supports soft reset (unstaging). Hard resets are not available for safety.
+</Warning>
+
+#### stash
+
+Stash or retrieve changes.
+
+<ParamField path="args.action" type="string" default="push">
+  Stash action: `push`, `pop`, or `list`
+</ParamField>
+
+<CodeGroup>
+```elixir Stash changes
+Loom.Tools.Git.run(
+  %{
+    operation: "stash",
+    args: %{action: "push"}
+  },
+  context
+)
+```
+
+```elixir Pop stash
+Loom.Tools.Git.run(
+  %{
+    operation: "stash",
+    args: %{action: "pop"}
+  },
+  context
+)
+```
+
+```elixir List stashes
+Loom.Tools.Git.run(
+  %{
+    operation: "stash",
+    args: %{action: "list"}
+  },
+  context
+)
+```
+</CodeGroup>
+
+**Returns (push):**
+```
+Stash pushed:
+Saved working directory and index state WIP on main: 1234567 Add auth
+```
+
+**Returns (list):**
+```
+Stash list:
+stash@{0}: WIP on main: 1234567 Add auth
+stash@{1}: WIP on feature: abcdefg Update router
+```
+
+### Error Handling
+
+All git operations return descriptive errors:
+
+```elixir
+Loom.Tools.Git.run(
+  %{
+    operation: "commit",
+    args: %{message: "Fix bug"}
+  },
+  context
+)
+
+# If nothing is staged:
+{:error, "git commit failed: nothing to commit, working tree clean"}
+```
+
+### Workflow Examples
+
+<CodeGroup>
+```elixir Check status and commit
+# 1. Check what changed
+{:ok, status} = Git.run(%{operation: "status"}, ctx)
+
+# 2. View the diff
+{:ok, diff} = Git.run(%{operation: "diff"}, ctx)
+
+# 3. Stage files
+{:ok, _} = Git.run(
+  %{operation: "add", args: %{files: ["lib/file.ex"]}},
+  ctx
+)
+
+# 4. Commit
+{:ok, _} = Git.run(
+  %{operation: "commit", args: %{message: "Add feature"}},
+  ctx
+)
+```
+
+```elixir Review before committing
+# See recent commits for context
+{:ok, log} = Git.run(%{operation: "log", args: %{count: 5}}, ctx)
+
+# Check current changes
+{:ok, diff} = Git.run(%{operation: "diff"}, ctx)
+
+# Stage and commit in one step
+{:ok, _} = Git.run(
+  %{
+    operation: "commit",
+    args: %{
+      message: "Refactor router",
+      files: ["lib/router.ex"]
+    }
+  },
+  ctx
+)
+```
+
+```elixir Stash workflow
+# Stash current work
+{:ok, _} = Git.run(
+  %{operation: "stash", args: %{action: "push"}},
+  ctx
+)
+
+# Do other work...
+
+# Pop stash back
+{:ok, _} = Git.run(
+  %{operation: "stash", args: %{action: "pop"}},
+  ctx
+)
+```
+</CodeGroup>
+
+## Implementation Details
+
+Shell and git tools are implemented in `lib/loom/tools/`:
+- `shell.ex` - Source: [lib/loom/tools/shell.ex:1](~/workspace/source/lib/loom/tools/shell.ex:1)
+- `git.ex` - Source: [lib/loom/tools/git.ex:1](~/workspace/source/lib/loom/tools/git.ex:1)
+
+The git tool uses the `git_cli` library for structured git operations.

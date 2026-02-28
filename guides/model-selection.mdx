@@ -1,0 +1,475 @@
+---
+title: Model Selection
+description: Choose the right LLM models for your Loom workflow
+---
+
+Loom supports multiple LLM models for different tasks. Choosing the right model balances cost, speed, and capability.
+
+## Model Roles
+
+Loom uses different models for different purposes:
+
+<CardGroup cols={2}>
+  <Card title="Default Model" icon="brain">
+    The primary reasoning engine. Handles complex planning, code understanding, and tool orchestration.
+  </Card>
+  <Card title="Weak Model" icon="zap">
+    Fast, cheap model for simple tasks like commit messages, summaries, and sub-agent searches.
+  </Card>
+  <Card title="Architect Model" icon="compass">
+    Strong model for planning in [Architect Mode](/guides/architect-mode). Creates detailed edit plans.
+  </Card>
+  <Card title="Editor Model" icon="pencil">
+    Fast model for executing plans in Architect Mode. Follows instructions precisely.
+  </Card>
+</CardGroup>
+
+## Switching Models
+
+You can change models in several ways:
+
+### In Configuration
+
+Set defaults in `.loom.toml`:
+
+```toml .loom.toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "anthropic:claude-haiku-4-5"
+```
+
+### During a Session (CLI)
+
+Switch models mid-conversation:
+
+```bash
+loom> /model anthropic:claude-opus-4-6
+✓ Switched to anthropic:claude-opus-4-6
+```
+
+### During a Session (Web UI)
+
+Use the model selector dropdown in the chat header.
+
+### Via API
+
+Update the model programmatically:
+
+```elixir
+Loom.Session.update_model(session_id, "openai:gpt-4-turbo")
+```
+
+## Model Format
+
+All models use the format `<provider>:<model-id>`:
+
+```
+anthropic:claude-sonnet-4-6
+openai:gpt-4-turbo-preview
+google:gemini-2.0-flash-exp
+groq:llama-3-70b
+xai:grok-beta
+```
+
+<Tip>
+Loom uses [req_llm](https://hexdocs.pm/req_llm) under the hood, which supports 16+ providers and 665+ models. Any model supported by req_llm works in Loom.
+</Tip>
+
+## Recommended Configurations
+
+### Balanced (Default)
+
+Good mix of performance and cost:
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "anthropic:claude-haiku-4-5"
+architect = "anthropic:claude-opus-4-6"
+editor = "anthropic:claude-haiku-4-5"
+```
+
+**Use case:** General development, mixed read/write workloads
+
+**Cost:** ~$3-10 per hour of active use
+
+### Performance-First
+
+Best models, higher cost:
+
+```toml
+[model]
+default = "anthropic:claude-opus-4-6"
+weak = "anthropic:claude-sonnet-4-6"
+architect = "anthropic:claude-opus-4-6"
+editor = "anthropic:claude-sonnet-4-6"
+```
+
+**Use case:** Complex refactoring, large codebases, critical production work
+
+**Cost:** ~$15-30 per hour of active use
+
+### Budget-Conscious
+
+Fast, cheap models:
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "anthropic:claude-haiku-4-5"
+architect = "anthropic:claude-sonnet-4-6"
+editor = "anthropic:claude-haiku-4-5"
+```
+
+**Use case:** Exploration, learning, low-risk changes
+
+**Cost:** ~$1-3 per hour of active use
+
+### OpenAI-Only
+
+Using OpenAI models:
+
+```toml
+[model]
+default = "openai:gpt-4-turbo-preview"
+weak = "openai:gpt-3.5-turbo"
+architect = "openai:gpt-4-turbo-preview"
+editor = "openai:gpt-3.5-turbo"
+```
+
+**Use case:** OpenAI API credits, Azure OpenAI deployments
+
+### Local Models
+
+Using Groq or local providers:
+
+```toml
+[model]
+default = "groq:llama-3-70b"
+weak = "groq:llama-3-8b"
+```
+
+**Use case:** Privacy-sensitive work, offline development, cost elimination
+
+<Warning>
+Local models may have lower code understanding and tool-use capabilities compared to Anthropic/OpenAI models.
+</Warning>
+
+## Model Characteristics
+
+### Anthropic Claude
+
+**Claude Opus 4-6** (most capable)
+- Best reasoning and planning
+- Excellent code understanding
+- High cost ($15 per million input tokens)
+- Use for: Complex refactoring, architecture decisions, architect mode
+
+**Claude Sonnet 4-6** (balanced)
+- Strong code understanding
+- Good tool use
+- Moderate cost ($3 per million input tokens)
+- Use for: Default agent model, general coding tasks
+
+**Claude Haiku 4-5** (fastest)
+- Good for simple tasks
+- Fast response times
+- Low cost ($0.25 per million input tokens)
+- Use for: Weak model, editor mode, sub-agents
+
+### OpenAI GPT
+
+**GPT-4 Turbo**
+- Strong reasoning
+- Good code generation
+- Moderate cost (~$10 per million input tokens)
+- Use for: Default model, architect mode
+
+**GPT-3.5 Turbo**
+- Fast and cheap
+- Good for simple tasks
+- Low cost (~$0.50 per million input tokens)
+- Use for: Weak model, editor mode
+
+### Google Gemini
+
+**Gemini 2.0 Flash**
+- Very fast
+- Experimental features
+- Free tier available
+- Use for: Exploration, testing
+
+### Groq
+
+**LLaMA 3 70B**
+- Fast inference
+- Open source
+- Free tier available
+- Use for: Budget-conscious workflows
+
+## Model Selection by Task
+
+### Code Review
+
+Recommended: **Claude Opus** or **GPT-4 Turbo**
+
+Why: Requires deep understanding, pattern recognition, security awareness
+
+```toml
+[model]
+default = "anthropic:claude-opus-4-6"
+```
+
+### Refactoring
+
+Recommended: **Claude Sonnet** or **GPT-4 Turbo**
+
+Why: Needs code understanding and planning, but not necessarily the most expensive model
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+```
+
+### Documentation Writing
+
+Recommended: **Claude Sonnet** or **GPT-3.5 Turbo**
+
+Why: Simpler task, doesn't require the strongest reasoning
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "openai:gpt-3.5-turbo"
+```
+
+### Test Generation
+
+Recommended: **Claude Sonnet** or **GPT-4 Turbo**
+
+Why: Needs to understand edge cases and failure modes
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+```
+
+### Codebase Exploration
+
+Recommended: **Claude Haiku** or **GPT-3.5 Turbo**
+
+Why: Mostly reading, summarizing, and pattern matching
+
+```toml
+[model]
+weak = "anthropic:claude-haiku-4-5"
+```
+
+## Performance Considerations
+
+### Context Window Size
+
+Different models have different context window limits:
+
+- **Claude Opus 4-6**: 200K tokens
+- **Claude Sonnet 4-6**: 200K tokens
+- **GPT-4 Turbo**: 128K tokens
+- **GPT-3.5 Turbo**: 16K tokens
+
+<Tip>
+For large codebases, choose a model with a large context window (Claude Sonnet/Opus, GPT-4 Turbo).
+</Tip>
+
+### Response Speed
+
+Faster models mean less waiting:
+
+- **Fastest**: Claude Haiku, Groq models (~1-2 seconds)
+- **Fast**: Claude Sonnet, GPT-4 Turbo (~3-5 seconds)
+- **Slower**: Claude Opus (~5-10 seconds)
+
+### Token Costs
+
+Approximate costs per million input tokens (as of 2024):
+
+| Model | Input Cost | Output Cost |
+|-------|------------|-------------|
+| Claude Opus 4-6 | $15 | $75 |
+| Claude Sonnet 4-6 | $3 | $15 |
+| Claude Haiku 4-5 | $0.25 | $1.25 |
+| GPT-4 Turbo | $10 | $30 |
+| GPT-3.5 Turbo | $0.50 | $1.50 |
+| Gemini 2.0 Flash | Free tier | Free tier |
+| Groq LLaMA 3 70B | Free tier | Free tier |
+
+<Warning>
+Pricing changes frequently. Check provider documentation for current rates.
+</Warning>
+
+## Multi-Model Workflows
+
+Loom's architecture allows sophisticated multi-model patterns:
+
+### Architect → Editor Pattern
+
+Use a strong model to plan, then a fast model to execute:
+
+```toml
+[model]
+architect = "anthropic:claude-opus-4-6"  # Plans the changes
+editor = "anthropic:claude-haiku-4-5"    # Executes the plan
+```
+
+See [Architect Mode](/guides/architect-mode) for details.
+
+### Main Agent + Sub-Agents
+
+Use a strong default model with fast sub-agents for exploration:
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"  # Main reasoning
+weak = "anthropic:claude-haiku-4-5"      # Sub-agent searches
+```
+
+See [Sub-Agents](/guides/sub-agents) for details.
+
+### Progressive Escalation
+
+Start with a cheap model, escalate to expensive models when needed:
+
+1. Start session with Claude Haiku
+2. If the task is too complex, `/model anthropic:claude-sonnet-4-6`
+3. If still struggling, `/model anthropic:claude-opus-4-6`
+
+## Monitoring Costs
+
+Loom tracks token usage and costs for each session:
+
+### Via Web UI
+
+Visit `/dashboard` to see:
+- Per-session token usage
+- Model usage breakdown
+- Cumulative costs
+
+### Via CLI
+
+Check session history:
+
+```bash
+loom> /sessions
+
+Session ID       | Model                        | Tokens | Cost
+----------------|------------------------------|--------|-------
+abc123          | anthropic:claude-sonnet-4-6  | 125K   | $0.38
+def456          | openai:gpt-4-turbo           | 89K    | $0.89
+```
+
+### Via Database
+
+Query SQLite directly:
+
+```sql
+SELECT 
+  id,
+  model,
+  input_tokens,
+  output_tokens,
+  total_cost
+FROM sessions
+ORDER BY updated_at DESC;
+```
+
+## Best Practices
+
+### Start with the Default
+
+The default configuration is carefully chosen:
+
+```toml
+[model]
+default = "anthropic:claude-sonnet-4-6"
+weak = "anthropic:claude-haiku-4-5"
+```
+
+Don't change it unless you have specific needs.
+
+### Use Weak Models Aggressively
+
+Sub-agents, commit messages, and summaries don't need expensive models:
+
+```toml
+[model]
+weak = "anthropic:claude-haiku-4-5"  # or even gpt-3.5-turbo
+```
+
+### Match Model to Task Complexity
+
+Don't use Opus for simple tasks. Don't use Haiku for complex refactoring.
+
+### Monitor Your Costs
+
+Check `/dashboard` regularly to understand usage patterns and optimize model selection.
+
+### Test New Models
+
+The LLM landscape evolves quickly. Try new models as they're released:
+
+```bash
+loom> /model google:gemini-2.0-flash-exp
+```
+
+## Troubleshooting
+
+### Model Not Found
+
+Error: `Model 'xyz' not found`
+
+**Solution:** Check the model ID format. It must be `<provider>:<model-id>`:
+
+```toml
+# ❌ Wrong
+default = "claude-sonnet-4-6"
+
+# ✅ Correct
+default = "anthropic:claude-sonnet-4-6"
+```
+
+### API Key Missing
+
+Error: `Provider 'anthropic' requires ANTHROPIC_API_KEY`
+
+**Solution:** Set the environment variable:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+### Rate Limit Errors
+
+Error: `Rate limit exceeded`
+
+**Solutions:**
+1. Switch to a different provider temporarily
+2. Use a slower model (fewer requests)
+3. Wait and retry
+
+### Poor Code Quality
+
+If the model produces low-quality code:
+
+1. **Try a stronger model**: Switch from Haiku → Sonnet or Sonnet → Opus
+2. **Check your prompts**: Vague requests get vague results
+3. **Use Architect Mode**: Let a strong model plan, then execute
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architect Mode" icon="compass" href="/guides/architect-mode">
+    Use two-model workflows for complex changes
+  </Card>
+  <Card title="Sub-Agents" icon="users" href="/guides/sub-agents">
+    Spawn lightweight agents for parallel exploration
+  </Card>
+</CardGroup>

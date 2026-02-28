@@ -1,0 +1,606 @@
+---
+title: Context Window
+description: How Loom manages context limits and intelligently budgets tokens
+---
+
+## The Context Problem
+
+Large Language Models have **finite context windows**. For example:
+
+- Claude Sonnet 4-6: **200,000 tokens**
+- GPT-4 Turbo: **128,000 tokens**
+- Claude Haiku 4-5: **200,000 tokens**
+
+A long coding session can easily exceed these limits if you include:
+
+- Full conversation history (100+ messages)
+- Entire repository map (1000+ files)
+- Tool definitions (50+ tools)
+- Decision graph context
+- System prompt
+
+Loom's **Context Window** system solves this by:
+
+1. **Budgeting** - Allocating tokens across zones (system, repo map, history, etc.)
+2. **Windowing** - Keeping only recent messages that fit the budget
+3. **Injection** - Enriching the system prompt with repo intelligence and decisions
+
+## Token Budget Allocation
+
+Loom divides the context window into **fixed zones**:
+
+```elixir
+@zone_defaults %{
+  system_prompt: 2048,        # Base instructions
+  decision_context: 1024,     # Decision graph history
+  repo_map: 2048,             # Repository structure
+  tool_definitions: 2048,     # Available tools
+  reserved_output: 4096       # Buffer for AI response
+}
+```
+
+The **remaining tokens** go to conversation history:
+
+```elixir
+defp allocate_budget(model, opts) do
+  total = model_limit(model)  # e.g., 200,000 for Claude Sonnet
+  
+  zones = %{
+    system_prompt: 2048,
+    decision_context: 1024,
+    repo_map: 2048,
+    tool_definitions: 2048,
+    reserved_output: 4096
+  }
+  
+  zone_sum = 2048 + 1024 + 2048 + 2048 + 4096  # = 11,264
+  history = max(total - zone_sum, 0)           # = 188,736 tokens
+  
+  Map.put(zones, :history, history)
+end
+```
+
+### Example: Claude Sonnet 4-6
+
+| Zone | Tokens | Purpose |
+|------|--------|--------|
+| System Prompt | 2,048 | Base instructions + project info |
+| Decision Context | 1,024 | Recent decisions, active goals |
+| Repo Map | 2,048 | Ranked files & symbols |
+| Tool Definitions | 2,048 | Tool schemas (JSON) |
+| Reserved Output | 4,096 | Buffer for response |
+| **Conversation History** | **188,736** | **Recent messages** |
+| **Total** | **200,000** | Model limit |
+
+<Info>
+With a 200K context window, you can store **~1,500 messages** (averaging 125 tokens each) plus full context enrichment.
+</Info>
+
+## Message Windowing
+
+When conversation history exceeds the budget, Loom keeps **only the most recent messages** that fit:
+
+```elixir
+defp select_recent(messages, available_tokens) do
+  messages
+  |> Enum.reverse()  # Start from newest
+  |> Enum.reduce_while({[], 0}, fn msg, {acc, used} ->
+    msg_tokens = estimate_message_tokens(msg)
+    
+    if used + msg_tokens <= available_tokens do
+      {:cont, {[msg | acc], used + msg_tokens}}  # Keep message
+    else
+      {:halt, {acc, used}}  # Stop, budget exceeded
+    end
+  end)
+  |> elem(0)
+end
+```
+
+### Visual Example
+
+Suppose you have 20 messages but only 10 fit:
+
+```
+All Messages (oldest → newest):
+[1] [2] [3] [4] [5] [6] [7] [8] [9] [10] [11] [12] [13] [14] [15] [16] [17] [18] [19] [20]
+
+After Windowing:
+                                     [11] [12] [13] [14] [15] [16] [17] [18] [19] [20]
+                                     ↑
+                                     Oldest message in window
+```
+
+Messages 1-10 are **dropped** (not deleted, just excluded from this request).
+
+<Warning>
+**Evicted messages are lost to the AI** for this turn. The AI cannot reference conversations from message #5 if only messages #11-20 fit.
+
+Future enhancement: [Summarization](#message-summarization) will condense old messages instead of dropping them.
+</Warning>
+
+## Token Estimation
+
+Loom uses a **rough approximation**: **1 token ≈ 4 characters**.
+
+```elixir
+@chars_per_token 4
+
+def estimate_tokens(text) when is_binary(text) do
+  div(String.length(text), @chars_per_token)
+end
+```
+
+### Why 4 Characters?
+
+- English text: ~4 characters/token
+- Code: ~3.5 characters/token (more symbols)
+- Punctuation/whitespace: Varies
+
+This is **conservative** and prevents over-packing. Actual token counts (via the provider's tokenizer) are tracked in usage stats.
+
+### Message Token Overhead
+
+```elixir
+defp estimate_message_tokens(msg) do
+  content_tokens = estimate_tokens(message_content(msg))
+  content_tokens + 4  # +4 for role, formatting, etc.
+end
+```
+
+Each message adds ~4 tokens for metadata (role, delimiters).
+
+## Context Injection
+
+The system prompt is **enriched** with three dynamic components:
+
+### 1. Decision Context
+
+```elixir
+defp inject_decision_context(system_parts, session_id) do
+  case Loom.Decisions.ContextBuilder.build(session_id) do
+    {:ok, context} when is_binary(context) and context != "" ->
+      system_parts ++ [context]
+    _ ->
+      system_parts
+  end
+end
+```
+
+**What gets injected:**
+
+```markdown
+## Active Goals
+- Add authentication to the API (confidence: 85%)
+- Improve error handling (confidence: 90%)
+
+## Recent Decisions
+- [decision] Use JWT tokens for auth
+- [action] Implement JWT middleware
+
+## Session Context
+[2026-02-28 10:30] goal: Add authentication to the API
+[2026-02-28 10:35] decision: Use JWT tokens for auth (confidence: 85%)
+```
+
+**Budget:** Up to **1,024 tokens** (truncated if exceeded).
+
+### 2. Repo Map
+
+```elixir
+defp inject_repo_map(system_parts, project_path, opts) do
+  case Loom.RepoIntel.RepoMap.generate(project_path, opts) do
+    {:ok, repo_map} when is_binary(repo_map) and repo_map != "" ->
+      system_parts ++ [repo_map]
+    _ ->
+      system_parts
+  end
+end
+```
+
+**What gets injected:**
+
+```markdown
+## Project Files
+
+### lib/loom/session/session.ex (relevance: high)
+Modules: Loom.Session
+Functions: send_message/2, get_history/1, update_model/2
+
+### lib/loom/session/context_window.ex (relevance: medium)
+Modules: Loom.Session.ContextWindow
+Functions: build_messages/3, allocate_budget/2
+```
+
+**Budget:** Up to **2,048 tokens** (configurable via `max_repo_map_tokens` option).
+
+**See:** [Repo Intelligence](/concepts/repo-intelligence) for ranking details.
+
+### 3. Project Rules
+
+```elixir
+defp inject_project_rules(system_parts, project_path) do
+  case Loom.ProjectRules.load(project_path) do
+    {:ok, rules} ->
+      formatted = Loom.ProjectRules.format_for_prompt(rules)
+      if formatted != "", do: system_parts ++ [formatted], else: system_parts
+    _ ->
+      system_parts
+  end
+end
+```
+
+Loads `.loom.toml` or similar config files with project-specific guidelines.
+
+**Example:**
+
+```toml
+[rules]
+style = "Follow Elixir community style guide"
+testing = "Write ExUnit tests for all public functions"
+```
+
+Converted to:
+
+```markdown
+## Project Rules
+- Style: Follow Elixir community style guide
+- Testing: Write ExUnit tests for all public functions
+```
+
+## Full Context Assembly
+
+Here's how all pieces come together:
+
+```elixir
+def build_messages(messages, system_prompt, opts \\ []) do
+  model = Keyword.get(opts, :model)
+  session_id = Keyword.get(opts, :session_id)
+  project_path = Keyword.get(opts, :project_path)
+  
+  # 1. Allocate budget
+  budget = allocate_budget(model, opts)
+  
+  # 2. Build enriched system prompt
+  system_parts = [system_prompt]
+  system_parts = inject_decision_context(system_parts, session_id)
+  system_parts = inject_repo_map(system_parts, project_path, max_tokens: budget.repo_map)
+  system_parts = inject_project_rules(system_parts, project_path)
+  enriched_system = Enum.join(system_parts, "\n\n")
+  
+  system_msg = %{role: :system, content: enriched_system}
+  
+  # 3. Window conversation history
+  recent_messages = select_recent(messages, budget.history)
+  
+  # 4. Combine
+  [system_msg | recent_messages]
+end
+```
+
+### Example Output
+
+```elixir
+[
+  %{
+    role: :system,
+    content: """
+    You are Loom, an AI coding assistant...
+    
+    ## Active Goals
+    - Add authentication (confidence: 85%)
+    
+    ## Project Files
+    ### lib/loom/session.ex (relevance: high)
+    ...
+    
+    ## Project Rules
+    - Follow Elixir style guide
+    """
+  },
+  %{role: :user, content: "Add error handling"},
+  %{role: :assistant, content: "I'll add try/rescue blocks..."},
+  %{role: :tool, content: "File edited", tool_call_id: "call_1"},
+  # ... more messages ...
+]
+```
+
+## Model Limit Lookup
+
+Loom uses [LLMDB](https://github.com/distributedstatemachine/llmdb) to look up model limits:
+
+```elixir
+def model_limit(model_string) when is_binary(model_string) do
+  case LLMDB.model(model_string) do
+    {:ok, %{limits: %{context: context}}} when is_integer(context) and context > 0 ->
+      context
+    _ ->
+      @default_context_limit  # 128,000
+  end
+end
+```
+
+**Example:**
+
+```elixir
+model_limit("anthropic:claude-sonnet-4-6")
+# => 200_000
+
+model_limit("openai:gpt-4-turbo")
+# => 128_000
+
+model_limit("unknown:model")
+# => 128_000  # Default fallback
+```
+
+## Message Summarization
+
+<Note>
+**Future Feature** - Currently a placeholder.
+</Note>
+
+When messages are evicted from the window, they could be **summarized** instead of dropped:
+
+```elixir
+def summarize_old_messages(messages, _opts \\ []) do
+  count = length(messages)
+  
+  snippet =
+    messages
+    |> Enum.map(&message_content/1)
+    |> Enum.join(" ")
+    |> String.slice(0, 200)
+  
+  "Summary of #{count} earlier messages: #{snippet}..."
+end
+```
+
+**Planned enhancement:**
+
+1. Call a **weak model** (Haiku, GPT-4o-mini) to summarize evicted messages
+2. Insert summary as a **pseudo-message** at the start of history
+3. Budget: ~500 tokens for summaries
+
+**Example:**
+
+```elixir
+[
+  %{role: :system, content: "..."},
+  %{role: :assistant, content: "[Summary] Earlier in this session, we added JWT authentication, refactored the session module, and fixed 3 bugs in error handling."},
+  %{role: :user, content: "Now add rate limiting"},
+  # ... recent messages ...
+]
+```
+
+## Customizing the Budget
+
+Override defaults via options:
+
+```elixir
+ContextWindow.build_messages(messages, system_prompt,
+  model: "anthropic:claude-opus-4-6",
+  max_decision_tokens: 2048,    # More decision context
+  max_repo_map_tokens: 4096,    # Larger repo map
+  reserved_output: 8192         # Longer responses
+)
+```
+
+Or use the legacy `max_tokens` override:
+
+```elixir
+ContextWindow.build_messages(messages, system_prompt,
+  max_tokens: 50_000  # Hard limit (ignores model lookup)
+)
+```
+
+<Warning>
+**Legacy mode:** Setting `max_tokens` explicitly **disables** budget-aware allocation. Use zone-specific options instead for better control.
+</Warning>
+
+## Performance Characteristics
+
+### Time Complexity
+
+- **Budget allocation:** O(1)
+- **Message windowing:** O(n) where n = total messages
+- **Context injection:** O(1) per component (cached)
+
+### Memory Usage
+
+- **Windowed messages:** ~125 tokens × 1500 messages = ~750KB
+- **Enriched system prompt:** ~5KB (2048 + 1024 + 2048 + overhead)
+- **Total context:** ~755KB (~6 million characters)
+
+### Optimization Tips
+
+<AccordionGroup>
+  <Accordion title="Reduce repo map size for faster sessions">
+    ```elixir
+    build_messages(messages, system_prompt,
+      max_repo_map_tokens: 1024  # Half the default
+    )
+    ```
+    
+    Trade-off: Less repository context, faster generation.
+  </Accordion>
+
+  <Accordion title="Use smaller models for simple tasks">
+    Smaller context windows = faster, cheaper:
+    
+    - **Haiku 4-5:** 200K tokens
+    - **GPT-4o-mini:** 128K tokens
+    
+    Both are 10x cheaper than flagship models.
+  </Accordion>
+
+  <Accordion title="Archive old sessions">
+    Long-running sessions eventually hit the window limit. Start fresh:
+    
+    ```elixir
+    # Mark old session as archived
+    Loom.Session.Persistence.update_session(session, %{status: :archived})
+    
+    # Start new session for the same project
+    Loom.Session.Manager.start_session(
+      project_path: old_session.project_path,
+      title: "Continue: #{old_session.title}"
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Monitor token usage stats">
+    Check session stats to see if you're hitting limits:
+    
+    ```elixir
+    session = Loom.Session.Persistence.get_session(session_id)
+    
+    IO.inspect(%{
+      prompt_tokens: session.prompt_tokens,
+      completion_tokens: session.completion_tokens,
+      cost_usd: session.cost_usd
+    })
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Debugging Context Issues
+
+### Check Budget Allocation
+
+```elixir
+budget = Loom.Session.ContextWindow.allocate_budget("anthropic:claude-sonnet-4-6")
+IO.inspect(budget)
+# => %{
+#   system_prompt: 2048,
+#   decision_context: 1024,
+#   repo_map: 2048,
+#   tool_definitions: 2048,
+#   reserved_output: 4096,
+#   history: 188736
+# }
+```
+
+### Estimate Message Count
+
+```elixir
+avg_tokens_per_message = 125
+max_messages = div(budget.history, avg_tokens_per_message)
+IO.puts("Can fit ~#{max_messages} messages")
+# => Can fit ~1509 messages
+```
+
+### Inspect Enriched System Prompt
+
+```elixir
+windowed = Loom.Session.ContextWindow.build_messages(
+  messages,
+  "You are Loom...",
+  session_id: session_id,
+  project_path: project_path
+)
+
+system_msg = List.first(windowed)
+IO.puts(system_msg.content)
+# => Full enriched prompt with decisions, repo map, rules
+```
+
+### Check Model Limit
+
+```elixir
+Loom.Session.ContextWindow.model_limit("anthropic:claude-sonnet-4-6")
+# => 200_000
+
+Loom.Session.ContextWindow.model_limit("unknown:model")
+# => 128_000  # Fallback
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Don't over-budget fixed zones">
+    If you set `max_repo_map_tokens: 10000`, you steal tokens from history. Balance wisely:
+    
+    ```elixir
+    # Good: Modest increases
+    max_repo_map_tokens: 3072    # +1024 from default
+    max_decision_tokens: 2048    # +1024 from default
+    # History: Still ~185K tokens
+    
+    # Bad: Excessive allocation
+    max_repo_map_tokens: 50000   # Massive map
+    max_decision_tokens: 10000   # Huge decision context
+    # History: Only ~127K tokens left (lost 60K!)
+    ```
+  </Accordion>
+
+  <Accordion title="Use architect mode for context-heavy tasks">
+    Architect mode splits context across two calls:
+    
+    1. **Architect call:** Full context (200K tokens)
+    2. **Editor calls:** Focused context per step (~10K tokens)
+    
+    Total tokens used can be **less** than a single normal mode call.
+  </Accordion>
+
+  <Accordion title="Keep system prompts concise">
+    The base system prompt counts against the 2048-token budget. Keep it under 1000 tokens:
+    
+    ```elixir
+    # Good: ~500 tokens
+    system_prompt = """
+    You are Loom, an AI coding assistant.
+    Project: #{project_path}
+    Model: #{model}
+    
+    Guidelines:
+    - Read files before editing
+    - Explain your reasoning
+    - Make minimal, focused changes
+    """
+    
+    # Bad: ~3000 tokens (steals from other zones!)
+    system_prompt = """
+    [20 paragraphs of detailed instructions...]
+    """
+    ```
+  </Accordion>
+
+  <Accordion title="Monitor evicted message count">
+    If users complain "the AI forgot something," check how many messages are evicted:
+    
+    ```elixir
+    total_messages = length(messages)
+    windowed_messages = build_messages(...) |> length() - 1  # -1 for system msg
+    evicted = total_messages - windowed_messages
+    
+    if evicted > 50 do
+      IO.warn("#{evicted} messages evicted—consider summarization or archiving")
+    end
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Future Enhancements
+
+- **Dynamic budgeting** - Allocate more tokens to repo map if decision context is small
+- **Semantic windowing** - Keep important messages even if old (e.g., initial requirements)
+- **Multi-turn summarization** - Periodically summarize entire conversation history
+- **Token-aware tool selection** - Skip low-value tools to save space in definitions
+- **Compression** - Use smaller models to compress verbose tool results
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Sessions" icon="comments" href="/concepts/sessions">
+    See how sessions use the context window
+  </Card>
+  <Card title="Repo Intelligence" icon="magnifying-glass-chart" href="/concepts/repo-intelligence">
+    Learn how repo maps are generated
+  </Card>
+  <Card title="Decision Graphs" icon="diagram-project" href="/concepts/decision-graphs">
+    Understand decision context injection
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Explore the full system architecture
+  </Card>
+</CardGroup>

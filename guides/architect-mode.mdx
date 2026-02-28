@@ -1,0 +1,482 @@
+---
+title: Architect Mode
+description: Two-model workflow for complex edits with planning and execution phases
+---
+
+Architect Mode is a two-phase workflow inspired by Aider's architect mode. A strong "architect" model plans the changes, then a fast "editor" model executes them.
+
+## How It Works
+
+Architect Mode splits complex editing tasks into two phases:
+
+<Steps>
+  <Step title="Architect Phase: Planning">
+    A strong model (Claude Opus, GPT-4) analyzes your request and produces a structured JSON plan with file-by-file edit instructions.
+  </Step>
+  <Step title="Editor Phase: Execution">
+    A fast model (Claude Haiku, GPT-3.5 Turbo) follows the plan and makes the changes using file read/edit/write tools.
+  </Step>
+</Steps>
+
+### Why Two Models?
+
+This pattern offers several advantages:
+
+- **Better planning** - Strong models see the full context and make better architectural decisions
+- **Lower cost** - Expensive models only plan; cheap models do the repetitive editing work
+- **Clearer reasoning** - The structured plan is saved in conversation history
+- **Easier review** - You can review the plan before execution begins
+
+## Enabling Architect Mode
+
+### Via Configuration
+
+Set architect and editor models in `.loom.toml`:
+
+```toml .loom.toml
+[model]
+architect = "anthropic:claude-opus-4-6"
+editor = "anthropic:claude-haiku-4-5"
+```
+
+### Via Session API
+
+Enable architect mode for a session:
+
+```elixir
+# Switch to architect mode
+Loom.Session.set_mode(session_id, :architect)
+
+# Check current mode
+{:ok, mode} = Loom.Session.get_mode(session_id)
+# => :architect or :normal
+
+# Switch back to normal mode
+Loom.Session.set_mode(session_id, :normal)
+```
+
+### Via CLI
+
+Architect mode is not yet exposed in the CLI (coming in Phase 4).
+
+### Via Web UI
+
+A mode toggle will be added to the LiveView UI in Phase 4.
+
+## The Planning Phase
+
+The architect model receives full context:
+
+- System prompt with project path and instructions
+- Decision graph context (recent goals and decisions)
+- Repository map (file structure and symbols)
+- Conversation history
+- All tool definitions
+
+It responds with a structured JSON plan:
+
+```json
+{
+  "summary": "Refactor authentication to use Pow library",
+  "plan": [
+    {
+      "file": "lib/myapp/accounts/user.ex",
+      "action": "edit",
+      "description": "Add Pow schema fields",
+      "details": "Add `use Pow.Ecto.Schema` after the schema definition. Add pow_user_fields() to the schema block."
+    },
+    {
+      "file": "lib/myapp/accounts/session.ex",
+      "action": "delete",
+      "description": "Remove custom session module",
+      "details": "Delete this file entirely - Pow handles sessions."
+    },
+    {
+      "file": "lib/myapp_web/controllers/auth_controller.ex",
+      "action": "create",
+      "description": "Add Pow authentication controller",
+      "details": "Create controller that uses Pow.Phoenix.Controller. Implement create/2 and delete/2 actions."
+    }
+  ]
+}
+```
+
+### Plan Structure
+
+Each plan item has four required fields:
+
+- **file** - Relative path from project root
+- **action** - One of: `create`, `edit`, `delete`
+- **description** - Human-readable summary of what this step does
+- **details** - Precise instructions for the editor model
+
+<Tip>
+The **details** field is critical. It should be specific enough that the editor can execute without additional context.
+</Tip>
+
+## The Execution Phase
+
+The editor model receives each plan item sequentially:
+
+<Steps>
+  <Step title="Read the Target File">
+    If the action is `edit`, the editor first reads the current file content.
+  </Step>
+  <Step title="Apply Changes">
+    The editor uses `file_edit`, `file_write`, or shell commands to make the specified changes.
+  </Step>
+  <Step title="Confirm Completion">
+    The editor responds with a confirmation message about what was changed.
+  </Step>
+  <Step title="Move to Next Item">
+    Repeat for all items in the plan.
+  </Step>
+</Steps>
+
+### Tool Restrictions
+
+The editor model only has access to file-related tools:
+
+- `file_read`
+- `file_edit`
+- `file_write`
+- `directory_list`
+
+This restriction prevents the editor from going off-script and ensures it follows the plan.
+
+## Example Session
+
+### User Request
+
+```
+Refactor the authentication system to use the Pow library instead of our custom implementation.
+```
+
+### Architect Response
+
+The architect model produces a plan:
+
+```markdown
+## Architect Plan
+
+Refactor authentication to use Pow library
+
+### Steps:
+1. **edit** `mix.exs` — Add pow and pow_postgres_store dependencies
+2. **edit** `lib/myapp/accounts/user.ex` — Add Pow schema fields and validations
+3. **delete** `lib/myapp/accounts/session.ex` — Remove custom session module
+4. **create** `lib/myapp_web/controllers/pow_controller.ex` — Add Pow authentication controller
+5. **edit** `lib/myapp_web/router.ex` — Replace custom auth routes with Pow routes
+6. **create** `priv/repo/migrations/20240315_add_pow_fields.exs` — Migration for pow fields
+
+_Executing plan with editor model..._
+```
+
+### Editor Execution
+
+The editor model executes each step:
+
+```markdown
+## Execution Complete
+
+Refactor authentication to use Pow library
+
+### Results (6/6 succeeded):
+1. [OK] edit `mix.exs` — Added pow 1.0.34 and pow_postgres_store 1.0.5 to dependencies
+2. [OK] edit `lib/myapp/accounts/user.ex` — Added `use Pow.Ecto.Schema` and pow_user_fields to schema
+3. [OK] delete `lib/myapp/accounts/session.ex` — File deleted
+4. [OK] create `lib/myapp_web/controllers/pow_controller.ex` — Created controller with Pow actions
+5. [OK] edit `lib/myapp_web/router.ex` — Replaced /auth routes with pow_routes()
+6. [OK] create `priv/repo/migrations/20240315_add_pow_fields.exs` — Created migration with email and password_hash
+```
+
+## When to Use Architect Mode
+
+### Good Use Cases
+
+<AccordionGroup>
+  <Accordion title="Large Refactorings">
+    When changes span multiple files and require architectural thinking.
+    
+    **Example:** Extracting a subsystem into a separate OTP application
+  </Accordion>
+  
+  <Accordion title="Framework Migrations">
+    Migrating from one library to another (e.g., Phoenix PubSub → Broadway).
+    
+    **Example:** Replacing hand-rolled auth with Guardian or Pow
+  </Accordion>
+  
+  <Accordion title="New Feature Scaffolding">
+    Creating the initial structure for a complex feature.
+    
+    **Example:** Adding a new bounded context with multiple schemas
+  </Accordion>
+  
+  <Accordion title="Coordinated Updates">
+    Changes that must happen together across multiple modules.
+    
+    **Example:** Updating a core data type and all its consumers
+  </Accordion>
+</AccordionGroup>
+
+### When NOT to Use Architect Mode
+
+<Warning>
+**Simple edits** - Single-file changes don't benefit from planning overhead.
+
+**Exploratory work** - When you're not sure what you want, normal mode's flexibility is better.
+
+**Quick fixes** - Bug fixes and small tweaks are faster in normal mode.
+</Warning>
+
+## Configuration Details
+
+### Model Selection
+
+The architect and editor models can be configured independently:
+
+```toml .loom.toml
+[model]
+architect = "anthropic:claude-opus-4-6"   # Strong reasoning
+editor = "anthropic:claude-haiku-4-5"     # Fast execution
+```
+
+### Recommended Combinations
+
+<Tabs>
+  <Tab title="Balanced">
+    ```toml
+    architect = "anthropic:claude-opus-4-6"
+    editor = "anthropic:claude-haiku-4-5"
+    ```
+    
+    Best mix of planning quality and execution speed. **Recommended for most use cases.**
+  </Tab>
+  
+  <Tab title="Premium">
+    ```toml
+    architect = "anthropic:claude-opus-4-6"
+    editor = "anthropic:claude-sonnet-4-6"
+    ```
+    
+    Both phases use strong models. More expensive but better for complex refactorings.
+  </Tab>
+  
+  <Tab title="Budget">
+    ```toml
+    architect = "anthropic:claude-sonnet-4-6"
+    editor = "anthropic:claude-haiku-4-5"
+    ```
+    
+    Lower cost. Good planning, fast execution. Suitable for well-defined tasks.
+  </Tab>
+  
+  <Tab title="OpenAI">
+    ```toml
+    architect = "openai:gpt-4-turbo-preview"
+    editor = "openai:gpt-3.5-turbo"
+    ```
+    
+    Using OpenAI models. GPT-4 plans, GPT-3.5 executes.
+  </Tab>
+</Tabs>
+
+## Implementation Details
+
+The architect mode logic lives in `lib/loom/session/architect.ex`:
+
+```elixir
+defmodule Loom.Session.Architect do
+  @moduledoc """
+  Two-model workflow: architect plans, editor executes.
+  """
+  
+  def run(user_text, state, opts \\ []) do
+    architect_model = resolve_architect_model(opts)
+    editor_model = resolve_editor_model(opts)
+    
+    # Phase 1: Plan with strong model
+    case plan(user_text, state, architect_model: architect_model) do
+      {:ok, plan_data, state} ->
+        # Phase 2: Execute with fast model
+        execute_plan(plan_data, state, editor_model: editor_model)
+      
+      {:error, reason, state} ->
+        {:error, reason, state}
+    end
+  end
+  
+  # Planning phase returns JSON plan
+  def plan(user_text, state, opts) do
+    # ... calls architect model with json_schema response format
+  end
+  
+  # Execution phase loops over plan items
+  defp execute_plan(plan_data, state, opts) do
+    # ... sends each item to editor model
+  end
+end
+```
+
+See `lib/loom/session/architect.ex:1` for the full implementation.
+
+## PubSub Events
+
+Architect mode broadcasts events for LiveView UI updates:
+
+```elixir
+# Planning phase started
+{:architect_phase, :planning}
+
+# Plan generated
+{:architect_plan, session_id, plan_data}
+
+# Execution phase started
+{:architect_phase, :executing}
+
+# Each step executing
+{:architect_step, session_id, step}
+
+# Tools executing/complete
+{:tool_executing, session_id, tool_name}
+{:tool_complete, session_id, tool_name, result}
+```
+
+You can subscribe to these events:
+
+```elixir
+Loom.Session.subscribe(session_id)
+
+receive do
+  {:architect_plan, ^session_id, plan} ->
+    IO.inspect(plan, label: "Plan generated")
+end
+```
+
+## Limitations
+
+### Editor Can't Ask Questions
+
+The editor model follows the plan mechanically. If the plan is unclear or wrong, the editor can't ask for clarification—it will just fail or produce incorrect results.
+
+**Mitigation:** Write detailed instructions in the plan's `details` field.
+
+### No Mid-Flight Adjustments
+
+If step 3 reveals a problem with step 5, the editor still executes step 5 as written.
+
+**Mitigation:** Review the plan before execution begins (future feature).
+
+### Tool Restrictions
+
+The editor only has file tools. It can't run tests, search the codebase, or inspect runtime behavior.
+
+**Mitigation:** Switch back to normal mode for verification:
+
+```elixir
+Loom.Session.set_mode(session_id, :normal)
+```
+
+## Best Practices
+
+### Be Specific in Requests
+
+Vague requests produce vague plans:
+
+<CodeGroup>
+```markdown ❌ Vague
+Improve the authentication system.
+```
+
+```markdown ✅ Specific
+Refactor authentication to use Pow library:
+- Add Pow dependencies
+- Migrate User schema to use Pow.Ecto.Schema
+- Replace custom session handling with Pow
+- Update routes to use pow_routes()
+```
+</CodeGroup>
+
+### Review the Plan
+
+The plan is saved in conversation history. Read it before asking follow-up questions.
+
+### Use for Multi-File Changes
+
+Architect mode shines when changes span 3+ files:
+
+- ✅ Adding a new feature with controller, context, schema, tests
+- ✅ Refactoring a subsystem across multiple modules
+- ❌ Fixing a typo in one file
+- ❌ Adding a single function
+
+### Start Small
+
+Test architect mode on smaller tasks first to understand its strengths and limitations.
+
+## Troubleshooting
+
+### Plan Parsing Errors
+
+**Error:** `Failed to parse architect plan: Invalid JSON`
+
+**Cause:** The architect model didn't return valid JSON.
+
+**Solution:**
+1. Try a different architect model (Opus > Sonnet > GPT-4)
+2. Simplify your request
+3. Check for model API issues
+
+### Editor Goes Off-Script
+
+**Issue:** The editor makes changes not in the plan.
+
+**Cause:** The plan's `details` field was too vague.
+
+**Solution:** Restart in normal mode and be more explicit:
+
+```markdown
+❌ "Update the function"
+✅ "Replace the function on line 45 with: [exact code]"
+```
+
+### Partial Failures
+
+**Issue:** Steps 1-3 succeed, step 4 fails, steps 5-6 are skipped.
+
+**Cause:** Editor encountered an error (file not found, invalid syntax, etc.).
+
+**Solution:**
+1. Review the execution results
+2. Fix the issue manually or ask Loom to fix it
+3. Re-run the remaining steps
+
+## Future Enhancements
+
+### Plan Review Step
+
+Pause between planning and execution to review/edit the plan.
+
+### Adaptive Execution
+
+Editor reports issues back to architect for plan adjustments.
+
+### Tool Expansion
+
+Allow editor to run tests, check compilation, or search for references.
+
+### Plan Templates
+
+Save and reuse successful plans for similar tasks.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Sub-Agents" icon="users" href="/guides/sub-agents">
+    Spawn lightweight agents for parallel exploration
+  </Card>
+  <Card title="Model Selection" icon="brain" href="/guides/model-selection">
+    Choose the right models for your workflow
+  </Card>
+</CardGroup>

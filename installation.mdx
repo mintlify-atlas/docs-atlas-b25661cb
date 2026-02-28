@@ -1,0 +1,237 @@
+---
+title: Installation
+description: Install Loom from source and configure your LLM provider
+---
+
+## Prerequisites
+
+Before installing Loom, ensure you have the following:
+
+<CardGroup cols={2}>
+  <Card title="Elixir 1.18+" icon="code">
+    Download from [elixir-lang.org](https://elixir-lang.org/install.html)
+  </Card>
+  
+  <Card title="LLM Provider API Key" icon="key">
+    At least one of: Anthropic, OpenAI, Google, Groq, xAI, or other [req_llm](https://github.com/agentjido/req_llm) supported provider
+  </Card>
+</CardGroup>
+
+<Note>
+  Loom uses SQLite for persistence, which is automatically included via `ecto_sqlite3`. No separate database installation required.
+</Note>
+
+## Installation from Source
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/yourusername/loom.git
+    cd loom
+    ```
+  </Step>
+  
+  <Step title="Install dependencies and set up the database">
+    ```bash
+    mix setup
+    ```
+    
+    This command runs:
+    - `mix deps.get` — Downloads all Elixir dependencies
+    - `mix ecto.create` — Creates the SQLite database
+    - `mix ecto.migrate` — Runs database migrations
+    
+    <Tip>
+      The database is created at `_build/dev.db` by default. In production, it defaults to `~/.loom/loom.db`.
+    </Tip>
+  </Step>
+  
+  <Step title="Build the CLI escript (optional)">
+    If you want to use Loom as a standalone CLI tool:
+    
+    ```bash
+    mix escript.build
+    ```
+    
+    This creates an executable `./loom` file in your project directory that you can run from anywhere.
+  </Step>
+  
+  <Step title="Verify installation">
+    Start the Phoenix web UI to verify everything works:
+    
+    ```bash
+    mix phx.server
+    ```
+    
+    You should see output like:
+    
+    ```
+    [info] Running LoomWeb.Endpoint with Bandit 1.6.0 at 127.0.0.1:4200 (http)
+    [info] Access LoomWeb.Endpoint at http://localhost:4200
+    ```
+    
+    Open [http://localhost:4200](http://localhost:4200) in your browser to access the web UI.
+  </Step>
+</Steps>
+
+## Configure Your LLM Provider
+
+<Steps>
+  <Step title="Set your API key">
+    Export your LLM provider's API key as an environment variable:
+    
+    <CodeGroup>
+    ```bash Anthropic
+    export ANTHROPIC_API_KEY="sk-ant-..."
+    ```
+    
+    ```bash OpenAI
+    export OPENAI_API_KEY="sk-..."
+    ```
+    
+    ```bash Google
+    export GOOGLE_API_KEY="..."
+    ```
+    
+    ```bash Groq
+    export GROQ_API_KEY="..."
+    ```
+    
+    ```bash xAI
+    export XAI_API_KEY="..."
+    ```
+    </CodeGroup>
+    
+    <Tip>
+      Add the export statement to your `~/.bashrc`, `~/.zshrc`, or equivalent shell configuration file to persist the key across terminal sessions.
+    </Tip>
+  </Step>
+  
+  <Step title="Create a .loom.toml configuration file (optional)">
+    Create a `.loom.toml` file in your project root to customize Loom's behavior:
+    
+    ```toml .loom.toml
+    [model]
+    # Default model for main reasoning tasks
+    default = "anthropic:claude-sonnet-4-6"
+    # Weak model for sub-agent search and parallel exploration
+    weak = "anthropic:claude-haiku-4-5"
+    
+    [permissions]
+    # Tools that don't require approval
+    auto_approve = [
+      "file_read",
+      "file_search",
+      "content_search",
+      "directory_list",
+      "decision_query"
+    ]
+    
+    [context]
+    # Maximum tokens for repo map in context
+    max_repo_map_tokens = 2048
+    # Maximum tokens for decision context
+    max_decision_context_tokens = 1024
+    # Tokens reserved for model output
+    reserved_output_tokens = 4096
+    ```
+    
+    <Note>
+      All configuration values are optional. Loom uses sensible defaults if not specified.
+    </Note>
+  </Step>
+  
+  <Step title="Test your configuration">
+    Run a quick test to verify your API key and configuration:
+    
+    <CodeGroup>
+    ```bash CLI
+    ./loom "What files are in this directory?"
+    ```
+    
+    ```bash Web UI
+    mix phx.server
+    # Open http://localhost:4200 and send a message
+    ```
+    </CodeGroup>
+    
+    You should see Loom respond with a list of files in your current directory.
+  </Step>
+</Steps>
+
+## Environment Variables
+
+Loom recognizes the following environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|--------|
+| `ANTHROPIC_API_KEY` | Anthropic API key | None |
+| `OPENAI_API_KEY` | OpenAI API key | None |
+| `GOOGLE_API_KEY` | Google AI API key | None |
+| `GROQ_API_KEY` | Groq API key | None |
+| `XAI_API_KEY` | xAI API key | None |
+| `LOOM_MODEL` | Override default model | From `.loom.toml` or config |
+| `LOOM_DB_PATH` | SQLite database location | `~/.loom/loom.db` (prod) |
+| `PORT` | Web UI port | `4200` |
+| `PHX_HOST` | Web UI host | `localhost` |
+| `SECRET_KEY_BASE` | Phoenix secret key | Auto-generated |
+
+## Building a Standalone Binary
+
+Loom can be packaged as a single self-contained binary using [Burrito](https://github.com/burrito-elixir/burrito). The binary bundles the BEAM runtime, so users don't need Elixir or Erlang installed.
+
+<Steps>
+  <Step title="Build for your current platform">
+    ```bash
+    MIX_ENV=prod mix release loom
+    ```
+    
+    The binary will be created in `burrito_out/` directory:
+    
+    ```bash
+    # macOS Apple Silicon
+    ./burrito_out/loom_macos_aarch64
+    
+    # macOS Intel
+    ./burrito_out/loom_macos_x86_64
+    
+    # Linux x86_64
+    ./burrito_out/loom_linux_x86_64
+    
+    # Linux ARM64
+    ./burrito_out/loom_linux_aarch64
+    ```
+  </Step>
+  
+  <Step title="Configure release behavior">
+    The release uses the following defaults:
+    
+    - Database: `~/.loom/loom.db` (override with `LOOM_DB_PATH`)
+    - Web UI port: `4200` (override with `PORT`)
+    - Migrations run automatically on startup
+  </Step>
+</Steps>
+
+<Warning>
+  Standalone binaries are configured for the targets in `mix.exs`. Cross-compilation may require additional setup depending on your platform.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Start your first coding session with Loom
+  </Card>
+  
+  <Card title="Project Rules" icon="file-lines" href="/guides/project-rules">
+    Create a LOOM.md file to give project-specific instructions
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Learn about all configuration options
+  </Card>
+  
+  <Card title="Tools" icon="toolbox" href="/tools/overview">
+    Explore the 11 built-in tools
+  </Card>
+</CardGroup>

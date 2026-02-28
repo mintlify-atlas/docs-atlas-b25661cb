@@ -1,0 +1,527 @@
+---
+title: 'Contributing'
+description: 'Guidelines for contributing to Loom: setup, testing, code standards, and pull requests'
+---
+
+## Getting Started
+
+Welcome! Loom is in active development (Phase 4) and contributions are welcome.
+
+### Prerequisites
+
+- **Elixir 1.18+** with OTP 27
+- **Erlang/OTP 27+**
+- **Git 2.0+**
+- An LLM API key for testing (Anthropic or OpenAI recommended)
+
+### Clone and Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/loom.git
+cd loom
+
+# Install dependencies and set up database
+mix setup
+
+# Run tests
+mix test
+
+# Start dev server
+mix phx.server
+```
+
+The web UI will be at `http://localhost:4200`.
+
+## Project Structure
+
+```
+loom/
+├── lib/
+│   ├── loom/                      # Core application
+│   │   ├── application.ex         # OTP supervision tree
+│   │   ├── agent.ex               # Jido.AI.Agent definition
+│   │   ├── config.ex              # ETS-backed config
+│   │   ├── session/               # Session management
+│   │   ├── tools/                 # 11 Jido.Action tools
+│   │   ├── decisions/             # Decision graph
+│   │   ├── repo_intel/            # Repo intelligence
+│   │   ├── permissions/           # Permission system
+│   │   ├── mcp/                   # MCP protocol
+│   │   └── lsp/                   # LSP client
+│   ├── loom_web/                  # Phoenix LiveView UI
+│   │   ├── endpoint.ex
+│   │   ├── router.ex
+│   │   └── live/                  # LiveView components
+│   └── loom_cli/                  # CLI interface
+│       ├── main.ex                # Escript entry
+│       └── interactive.ex         # REPL
+├── test/                          # 226 tests across 27 files
+├── config/                        # Configuration
+├── priv/repo/migrations/          # Database migrations
+└── docs/                          # Documentation
+```
+
+**56 source files. ~6,100 LOC application code. ~2,600 LOC tests.**
+
+## Development Workflow
+
+### Running Tests
+
+```bash
+# Run all tests
+mix test
+
+# Run with verbose output
+mix test --trace
+
+# Run specific test file
+mix test test/loom/session_test.exs
+
+# Run tests matching pattern
+mix test --only tag:integration
+
+# Run tests and show coverage
+mix test --cover
+```
+
+Loom includes **226 tests** across:
+
+- Session management
+- Tool execution
+- Decision graph operations
+- Repo intelligence
+- Permission system
+- LiveView components
+- CLI rendering
+
+### Code Formatting
+
+Loom uses the standard Elixir formatter with Phoenix and Ecto plugins:
+
+```bash
+# Format all code
+mix format
+
+# Check if code is formatted
+mix format --check-formatted
+```
+
+The `.formatter.exs` configuration:
+
+```elixir
+[
+  import_deps: [:ecto, :ecto_sql, :phoenix],
+  plugins: [Phoenix.LiveView.HTMLFormatter],
+  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs,heex}"]
+]
+```
+
+### Running the Dev Server
+
+```bash
+# Start Phoenix with live reload
+mix phx.server
+
+# Or with IEx for debugging
+iex -S mix phx.server
+```
+
+The dev server includes:
+
+- **LiveReload** — Browser refreshes on file changes
+- **LiveDashboard** — `http://localhost:4200/dashboard`
+- **Hot code reloading** — Update modules without restart
+
+### Database Management
+
+```bash
+# Create database
+mix ecto.create
+
+# Run migrations
+mix ecto.migrate
+
+# Rollback last migration
+mix ecto.rollback
+
+# Reset database (drop + create + migrate)
+mix ecto.reset
+
+# Generate new migration
+mix ecto.gen.migration add_new_field
+```
+
+## Code Standards
+
+### Style Guide
+
+Follow the [Elixir Style Guide](https://github.com/christopheradams/elixir_style_guide):
+
+- Use 2 spaces for indentation
+- Max line length: 120 characters
+- Module documentation with `@moduledoc`
+- Function documentation with `@doc`
+- Typespec for public functions
+- Pattern match in function heads when possible
+
+### Naming Conventions
+
+- **Modules**: `PascalCase` (e.g., `Loom.Session`)
+- **Functions**: `snake_case` (e.g., `send_message/2`)
+- **Variables**: `snake_case` (e.g., `session_id`)
+- **Atoms**: `snake_case` (e.g., `:thinking`)
+- **GenServer names**: Via Registry (e.g., `{:via, Registry, {Loom.SessionRegistry, session_id}}`)
+
+### Module Documentation
+
+Every module should have a `@moduledoc`:
+
+```elixir
+defmodule Loom.Session do
+  @moduledoc """
+  Core GenServer that runs the agent loop for a coding assistant session.
+  
+  ## Responsibilities
+  
+  - Manages conversation history
+  - Executes the ReAct reasoning loop
+  - Enforces tool permissions
+  - Broadcasts events via PubSub
+  
+  ## Examples
+  
+      {:ok, pid} = Loom.Session.start_link(session_id: "abc-123")
+      {:ok, response} = Loom.Session.send_message(pid, "What is this project?")
+  """
+end
+```
+
+### Function Documentation
+
+Public functions should have `@doc` and `@spec`:
+
+```elixir
+@doc """
+Send a user message and get back the assistant's response.
+
+Returns `{:ok, response_text}` on success or `{:error, reason}` on failure.
+
+## Examples
+
+    {:ok, response} = Session.send_message(pid, "Read lib/loom/agent.ex")
+"""
+@spec send_message(pid() | String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+def send_message(pid, text) when is_pid(pid) do
+  GenServer.call(pid, {:send_message, text}, :infinity)
+end
+```
+
+### Error Handling
+
+Use tagged tuples for errors:
+
+```elixir
+# Good
+def read_file(path) do
+  case File.read(path) do
+    {:ok, content} -> {:ok, content}
+    {:error, reason} -> {:error, "Failed to read #{path}: #{reason}"}
+  end
+end
+
+# Bad (don't raise unless truly exceptional)
+def read_file(path) do
+  File.read!(path)
+end
+```
+
+Use `with` for error propagation:
+
+```elixir
+def create_and_populate_file(path, content) do
+  with :ok <- ensure_directory_exists(path),
+       {:ok, file} <- File.open(path, [:write]),
+       :ok <- IO.write(file, content),
+       :ok <- File.close(file) do
+    {:ok, path}
+  end
+end
+```
+
+### Testing Standards
+
+Use ExUnit with descriptive test names:
+
+```elixir
+defmodule Loom.SessionTest do
+  use Loom.DataCase, async: true
+  
+  alias Loom.Session
+  
+  describe "send_message/2" do
+    test "saves user message to database" do
+      {:ok, pid} = start_supervised({Session, session_id: "test-123", model: "test"})
+      
+      assert {:ok, _response} = Session.send_message(pid, "Hello")
+      
+      messages = Loom.Session.Persistence.load_messages("test-123")
+      assert Enum.any?(messages, &(&1.role == :user and &1.content == "Hello"))
+    end
+    
+    test "returns error when session not found" do
+      assert {:error, :not_found} = Session.send_message("nonexistent", "Hello")
+    end
+  end
+end
+```
+
+### Git Workflow
+
+1. **Create a feature branch**
+
+```bash
+git checkout -b feature/add-new-tool
+```
+
+2. **Make focused commits**
+
+```bash
+# Stage changes
+git add lib/loom/tools/new_tool.ex test/loom/tools/new_tool_test.exs
+
+# Commit with clear message
+git commit -m "Add NewTool for X functionality
+
+Implements Y behavior as specified in #123.
+Includes tests and documentation."
+```
+
+3. **Keep commits atomic**
+
+One logical change per commit. Don't mix refactoring with feature additions.
+
+4. **Push and open PR**
+
+```bash
+git push origin feature/add-new-tool
+```
+
+Then open a pull request on GitHub.
+
+### Commit Message Format
+
+```
+Short summary (50 chars or less)
+
+More detailed explanation if needed. Wrap at 72 characters.
+Explain what and why, not how (code shows how).
+
+References:
+- Closes #123
+- Related to #456
+```
+
+**Good commit messages:**
+
+- `Add file_watch tool for detecting file changes`
+- `Fix session crash when LLM times out`
+- `Refactor context window to use token budgets`
+- `Update decision graph to track confidence scores`
+
+**Bad commit messages:**
+
+- `Fix bug`
+- `Update stuff`
+- `WIP`
+- `changes`
+
+## Adding New Features
+
+### Adding a New Tool
+
+1. **Create the tool module**
+
+```elixir
+# lib/loom/tools/my_tool.ex
+defmodule Loom.Tools.MyTool do
+  use Jido.Action,
+    name: "my_tool",
+    description: "Does something useful",
+    schema: [
+      param_name: [type: :string, required: true, doc: "Description"]
+    ]
+
+  @impl true
+  def run(params, context) do
+    # Implementation
+    {:ok, %{result: "..."}}
+  end
+end
+```
+
+2. **Register in agent**
+
+```elixir
+# lib/loom/agent.ex
+use Jido.AI.Agent,
+  tools: [
+    # ... existing tools
+    Loom.Tools.MyTool
+  ]
+```
+
+3. **Add tests**
+
+```elixir
+# test/loom/tools/my_tool_test.exs
+defmodule Loom.Tools.MyToolTest do
+  use ExUnit.Case
+  
+  alias Loom.Tools.MyTool
+  
+  test "executes successfully" do
+    params = %{param_name: "value"}
+    context = %{project_path: "/tmp"}
+    
+    assert {:ok, %{result: _}} = MyTool.run(params, context)
+  end
+end
+```
+
+4. **Document in docs/**
+
+### Adding a New LiveView Component
+
+1. **Create component module**
+
+```elixir
+# lib/loom_web/live/my_component.ex
+defmodule LoomWeb.MyComponent do
+  use LoomWeb, :live_component
+  
+  def render(assigns) do
+    ~H"""
+    <div>
+      <!-- Component markup -->
+    </div>
+    """
+  end
+end
+```
+
+2. **Add to workspace**
+
+```elixir
+# lib/loom_web/live/workspace_live.ex
+<.live_component module={LoomWeb.MyComponent} id="my-component" />
+```
+
+3. **Add tests**
+
+```elixir
+# test/loom_web/live/my_component_test.exs
+defmodule LoomWeb.MyComponentTest do
+  use LoomWeb.ConnCase, async: true
+  
+  import Phoenix.LiveViewTest
+  
+  test "renders component", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    
+    assert has_element?(view, "#my-component")
+  end
+end
+```
+
+## Pull Request Process
+
+1. **Ensure tests pass**
+
+```bash
+mix test
+mix format --check-formatted
+```
+
+2. **Update documentation**
+
+If you added a feature, update relevant docs in `docs/`.
+
+3. **Open PR with clear description**
+
+```markdown
+## Summary
+
+Adds new tool for X functionality.
+
+## Changes
+
+- Created `Loom.Tools.MyTool`
+- Added tests
+- Updated documentation
+
+## Testing
+
+- [x] All existing tests pass
+- [x] Added new tests for feature
+- [x] Tested manually in web UI
+
+## Related Issues
+
+Closes #123
+```
+
+4. **Respond to review feedback**
+
+Address comments, make changes, push updates.
+
+5. **Squash commits if requested**
+
+```bash
+git rebase -i main
+# Mark commits as 'squash' in editor
+git push --force-with-lease
+```
+
+## Areas for Contribution
+
+### High Priority
+
+- **Tree-sitter integration** — Replace regex symbol extraction with tree-sitter
+- **LSP diagnostics** — Pull compiler errors into agent context
+- **MCP protocol** — Expose Loom tools to VS Code/Cursor
+- **Agent swarms** — Multi-agent coordination (see [Swarm Design](/advanced/swarm-design))
+- **Performance** — Optimize context window, repo index, decision graph queries
+
+### Medium Priority
+
+- **Additional tools** — Database query, API request, file watch
+- **Model providers** — Add support for more LLM providers via req_llm
+- **UI enhancements** — Keyboard shortcuts, dark mode toggle, mobile support
+- **Documentation** — More examples, guides, video walkthroughs
+
+### Good First Issues
+
+- Fix typos in documentation
+- Add tests for edge cases
+- Improve error messages
+- Add examples to `LOOM.md` guide
+
+## Questions or Issues?
+
+- **Documentation**: Check [docs/](/)
+- **Bugs**: Open an issue on GitHub
+- **Features**: Discuss in an issue first before implementing
+- **Help**: Ask in GitHub Discussions
+
+## Code of Conduct
+
+Be respectful, constructive, and welcoming. This is a technical project focused on building useful tools.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the MIT License.
+
+---
+
+Thank you for contributing to Loom! Your efforts help build the future of AI-assisted coding on the BEAM.

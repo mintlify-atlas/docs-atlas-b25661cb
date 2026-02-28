@@ -1,0 +1,541 @@
+---
+title: 'Agent Swarms on the BEAM'
+description: 'Future architecture for multi-agent coordination using OTP primitives'
+---
+
+## Vision
+
+The BEAM was built for running millions of lightweight, isolated, communicating processes. That's exactly what an AI agent swarm is.
+
+The patterns emerging in tools like Claude Code's teams feature—where a lead agent spawns specialized workers, coordinates via message passing, tracks tasks with dependencies, and gracefully shuts down completed agents—that's just OTP.
+
+## Why the BEAM Is Perfect for Agent Swarms
+
+### Concurrency Without Complexity
+
+An AI agent that reads files, searches code, runs shell commands, and calls LLMs is inherently concurrent. On the BEAM, each tool execution is a lightweight process. Parallel tool calls aren't a threading nightmare—they're just `Task.async_stream`.
+
+```elixir
+# Spawn 4 agents to analyze different modules in parallel
+tasks = [
+  {ResearcherAgent, :analyze_usage, ["lib/loom/session.ex"]},
+  {ResearcherAgent, :analyze_usage, ["lib/loom/agent.ex"]},
+  {ResearcherAgent, :analyze_usage, ["lib/loom/tools/*.ex"]},
+  {ResearcherAgent, :analyze_usage, ["test/**/*_test.exs"]}
+]
+
+results = Task.async_stream(tasks, fn {mod, fun, args} ->
+  apply(mod, fun, args)
+end)
+```
+
+No thread pools, no callback hell, no GIL.
+
+### Fault Tolerance Is Built In
+
+When a shell command hangs or an LLM provider times out, OTP supervisors handle it. A crashed tool doesn't take down the session. A crashed session doesn't take down the application. This isn't defensive coding—it's how the BEAM works.
+
+```elixir
+# If a researcher agent crashes, the supervisor restarts it
+Supervisor.start_link(
+  [
+    {Loom.Agents.Researcher, name: :researcher_1},
+    {Loom.Agents.Researcher, name: :researcher_2},
+    {Loom.Agents.Architect, name: :architect},
+    {Loom.Agents.Implementer, name: :implementer}
+  ],
+  strategy: :one_for_one
+)
+```
+
+### Process Discovery
+
+`Registry` provides process discovery. Agents find each other by name, not by PID.
+
+```elixir
+# Lead agent spawns workers
+{:ok, researcher_pid} = DynamicSupervisor.start_child(
+  Loom.SwarmSupervisor,
+  {Loom.Agents.Researcher, session_id: session_id, role: :researcher}
+)
+
+# Later, any agent can find the researcher
+{:ok, pid} = Registry.lookup(Loom.SwarmRegistry, {:researcher, session_id})
+GenServer.call(pid, {:research, "How is auth implemented?"})
+```
+
+### Native Message Passing
+
+GenServer message passing is the native communication primitive. No Redis pub/sub, no HTTP polling, no message broker.
+
+```elixir
+# Architect sends a task to implementer
+GenServer.cast(
+  implementer_pid,
+  {:implement, %{
+    file: "lib/loom/auth.ex",
+    plan: "Add email/password authentication",
+    constraints: ["Use Bcrypt for hashing", "Add tests"]
+  }}
+)
+```
+
+### Monitors and Links
+
+Handles the "what if an agent crashes?" problem that every other framework handles with retry loops and health checks.
+
+```elixir
+# Lead agent monitors workers
+ref = Process.monitor(implementer_pid)
+
+receive do
+  {:DOWN, ^ref, :process, ^implementer_pid, reason} ->
+    Logger.error("Implementer crashed: #{inspect(reason)}")
+    # Restart or reassign work
+end
+```
+
+## Proposed Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│              Lead Agent (Session)               │
+│  - Receives user intent                         │
+│  - Decomposes into tasks                        │
+│  - Spawns specialist agents                     │
+│  - Coordinates via message passing              │
+│  - Aggregates results                           │
+└───────┬─────────────────────────────────────────┘
+        │
+        ├────────────┬────────────┬────────────┐
+        ▼            ▼            ▼            ▼
+   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+   │Researcher│ │Architect│ │Implementer│ │ Tester  │
+   │  Agent   │ │  Agent  │ │   Agent   │ │ Agent   │
+   └─────────┘ └─────────┘ └─────────┘ └─────────┘
+        │            │            │            │
+        └────────────┴────────────┴────────────┘
+                     │
+              Shared Decision Graph
+```
+
+### Agent Roles
+
+#### Lead Agent
+
+The existing `Loom.Session` GenServer becomes the lead agent:
+
+- Receives user input
+- Decomposes requests into tasks
+- Spawns specialist agents under `DynamicSupervisor`
+- Tracks task dependencies in the decision graph
+- Aggregates results and responds to the user
+
+#### Researcher Agent
+
+Read-only agent for codebase exploration:
+
+- Tools: `file_read`, `file_search`, `content_search`, `directory_list`
+- Weak model (Claude Haiku) for cost efficiency
+- Spawned in parallel for independent research tasks
+- Example: "Find all usages of `Session.send_message`"
+
+```elixir
+defmodule Loom.Agents.Researcher do
+  use GenServer
+  
+  def start_link(opts) do
+    session_id = Keyword.fetch!(opts, :session_id)
+    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {Loom.SwarmRegistry, {:researcher, session_id}}})
+  end
+  
+  def research(pid, question) do
+    GenServer.call(pid, {:research, question}, :infinity)
+  end
+  
+  def handle_call({:research, question}, _from, state) do
+    # Run a read-only agent loop with weak model
+    {:ok, result} = Loom.Agent.run(
+      model: "anthropic:claude-haiku-4-5",
+      tools: [:file_read, :file_search, :content_search, :directory_list],
+      system_prompt: "You are a research agent. Find information but do not modify files.",
+      input: question,
+      project_path: state.project_path
+    )
+    
+    {:reply, {:ok, result}, state}
+  end
+end
+```
+
+#### Architect Agent
+
+Planning agent using a strong model:
+
+- Tools: `file_read`, `file_search`, `decision_log`, `decision_query`
+- Strong model (Claude Opus) for complex reasoning
+- Generates implementation plans
+- Logs decisions to the shared decision graph
+- Example: "Design a new authentication system"
+
+```elixir
+defmodule Loom.Agents.Architect do
+  use GenServer
+  
+  def plan(pid, goal) do
+    GenServer.call(pid, {:plan, goal}, :infinity)
+  end
+  
+  def handle_call({:plan, goal}, _from, state) do
+    {:ok, plan} = Loom.Agent.run(
+      model: "anthropic:claude-opus-4-6",
+      tools: [:file_read, :file_search, :decision_log, :decision_query],
+      system_prompt: """
+      You are an architect agent. Analyze the codebase and create detailed implementation plans.
+      Log all major decisions to the decision graph.
+      """,
+      input: goal,
+      project_path: state.project_path,
+      session_id: state.session_id
+    )
+    
+    {:reply, {:ok, plan}, state}
+  end
+end
+```
+
+#### Implementer Agent
+
+Code execution agent:
+
+- Tools: `file_read`, `file_write`, `file_edit`, `shell`, `git`
+- Fast model (Claude Sonnet) for execution
+- Follows plans from the architect
+- Commits changes with explanatory messages
+- Example: "Implement the plan for adding email auth"
+
+```elixir
+defmodule Loom.Agents.Implementer do
+  use GenServer
+  
+  def implement(pid, plan) do
+    GenServer.call(pid, {:implement, plan}, :infinity)
+  end
+  
+  def handle_call({:implement, plan}, _from, state) do
+    {:ok, result} = Loom.Agent.run(
+      model: "anthropic:claude-sonnet-4-6",
+      tools: [:file_read, :file_write, :file_edit, :shell, :git],
+      system_prompt: """
+      You are an implementer agent. Follow the plan exactly.
+      Make minimal, focused changes. Run tests after editing.
+      """,
+      input: "Implement this plan:\n\n#{plan}",
+      project_path: state.project_path,
+      session_id: state.session_id
+    )
+    
+    {:reply, {:ok, result}, state}
+  end
+end
+```
+
+#### Tester Agent
+
+Verification agent:
+
+- Tools: `shell`, `file_read`, `content_search`
+- Weak model for cost efficiency
+- Runs tests, analyzes failures, suggests fixes
+- Example: "Run mix test and report any failures"
+
+```elixir
+defmodule Loom.Agents.Tester do
+  use GenServer
+  
+  def verify(pid) do
+    GenServer.call(pid, :verify, :infinity)
+  end
+  
+  def handle_call(:verify, _from, state) do
+    {:ok, result} = Loom.Agent.run(
+      model: "anthropic:claude-haiku-4-5",
+      tools: [:shell, :file_read, :content_search],
+      system_prompt: "You are a tester agent. Run tests and analyze failures.",
+      input: "Run all tests and report results",
+      project_path: state.project_path
+    )
+    
+    {:reply, {:ok, result}, state}
+  end
+end
+```
+
+## Example Workflow
+
+User request: **"Refactor the session module"**
+
+### Step 1: Lead Agent Decomposes Task
+
+```elixir
+defmodule Loom.Session do
+  def send_message(pid, "Refactor the session module") do
+    # Lead agent analyzes request and spawns specialists
+    {:ok, researcher_pid} = spawn_agent(:researcher)
+    {:ok, architect_pid} = spawn_agent(:architect)
+    {:ok, implementer_pid} = spawn_agent(:implementer)
+    {:ok, tester_pid} = spawn_agent(:tester)
+    
+    # Research phase (parallel)
+    tasks = [
+      Task.async(fn -> Researcher.research(researcher_pid, "What does the session module do?") end),
+      Task.async(fn -> Researcher.research(researcher_pid, "What tests exist for sessions?") end),
+      Task.async(fn -> Researcher.research(researcher_pid, "What modules depend on Session?") end)
+    ]
+    
+    research_results = Task.await_many(tasks, :infinity)
+    
+    # Planning phase
+    plan = Architect.plan(architect_pid, """
+    Refactor lib/loom/session/session.ex based on this research:
+    #{inspect(research_results)}
+    """)
+    
+    # Implementation phase
+    result = Implementer.implement(implementer_pid, plan)
+    
+    # Verification phase
+    test_result = Tester.verify(tester_pid)
+    
+    # Aggregate and respond
+    {:ok, """
+    Refactored session module:
+    
+    #{result}
+    
+    Tests: #{test_result}
+    """}
+  end
+end
+```
+
+### Step 2: Researcher Agents Explore in Parallel
+
+```
+[Researcher 1] Reading lib/loom/session/session.ex
+[Researcher 2] Finding test files matching **/session*_test.exs
+[Researcher 3] Searching for "Loom.Session" references
+```
+
+All three run concurrently. Each is a separate GenServer with its own LLM context.
+
+### Step 3: Architect Creates Plan
+
+```
+[Architect] Based on research:
+- Session.ex is 671 lines (too large)
+- Extract permission logic to Session.Permissions
+- Extract tool execution to Session.ToolExecutor
+- Keep core GenServer in Session
+```
+
+### Step 4: Implementer Executes Plan
+
+```
+[Implementer] Creating lib/loom/session/permissions.ex
+[Implementer] Creating lib/loom/session/tool_executor.ex
+[Implementer] Editing lib/loom/session/session.ex
+[Implementer] Running mix format
+```
+
+### Step 5: Tester Verifies
+
+```
+[Tester] Running mix test
+[Tester] All 226 tests passed
+[Tester] Coverage: 94%
+```
+
+### Step 6: Lead Agent Responds
+
+```
+Refactored the session module:
+
+- Extracted permission checking to Session.Permissions
+- Extracted tool dispatch to Session.ToolExecutor  
+- Reduced Session.ex from 671 to 423 lines
+- All tests passing
+```
+
+## Shared State: The Decision Graph
+
+All agents read and write to the same decision graph in SQLite. This provides:
+
+- **Shared memory** — All agents see the same goals, decisions, and outcomes
+- **Coordination** — Agents can check what others have decided
+- **Persistence** — The plan survives agent crashes
+- **Visualization** — LiveView renders the entire swarm's reasoning in real-time
+
+```elixir
+# Architect logs a decision
+Loom.Decisions.Graph.add_node(%{
+  node_type: :decision,
+  title: "Extract permission logic to separate module",
+  session_id: session_id,
+  confidence: 85
+})
+
+# Implementer checks active decisions before making changes
+active_decisions = Loom.Decisions.Graph.list_nodes(
+  session_id: session_id,
+  node_type: :decision,
+  status: :active
+)
+```
+
+## Implementation Plan
+
+### Phase 1: Multi-Agent Infrastructure (Current)
+
+- [x] Session GenServer as lead agent
+- [x] DynamicSupervisor for spawning sessions
+- [x] Registry for process discovery
+- [x] Shared decision graph
+- [x] Sub-agent tool (read-only researcher)
+
+### Phase 2: Specialized Agent Modules
+
+- [ ] `Loom.Agents.Researcher` — Parallel codebase exploration
+- [ ] `Loom.Agents.Architect` — Plan generation with strong model
+- [ ] `Loom.Agents.Implementer` — Code execution with fast model
+- [ ] `Loom.Agents.Tester` — Test execution and analysis
+
+### Phase 3: Coordination Protocol
+
+- [ ] Task decomposition in lead agent
+- [ ] Dependency tracking in decision graph
+- [ ] Agent-to-agent message passing
+- [ ] Result aggregation
+
+### Phase 4: Swarm UI
+
+- [ ] LiveView component showing active agents
+- [ ] Agent status indicators (thinking, executing, idle)
+- [ ] Real-time decision graph with agent annotations
+- [ ] Cost breakdown per agent
+
+## Benefits of BEAM-Native Swarms
+
+### No External Dependencies
+
+- No message broker (Redis, RabbitMQ)
+- No task queue (Celery, Sidekiq)
+- No orchestration layer (Kubernetes, Docker Swarm)
+
+Just OTP.
+
+### Fault Tolerance
+
+```elixir
+# If researcher crashes, supervisor restarts it
+children = [
+  {Loom.Agents.Researcher, restart: :transient}
+]
+
+Supervisor.start_link(children, strategy: :one_for_one)
+```
+
+### Backpressure
+
+```elixir
+# Limit concurrent researchers to avoid API rate limits
+Task.async_stream(
+  research_tasks,
+  &Researcher.research/1,
+  max_concurrency: 5,
+  timeout: 60_000
+)
+```
+
+### Live Introspection
+
+```elixir
+# From remote console
+iex> Loom.SwarmSupervisor |> DynamicSupervisor.which_children() |> length()
+7  # 1 lead + 3 researchers + 1 architect + 1 implementer + 1 tester
+
+iex> Registry.select(Loom.SwarmRegistry, [{{:"$1", :"$2", :"$3"}, [], [:"$_"]}])
+[
+  {{:researcher, "session-123"}, #PID<0.456.0>, :researcher_1},
+  {{:architect, "session-123"}, #PID<0.457.0>, :architect},
+  ...
+]
+```
+
+### Hot Code Reloading
+
+Update agent behavior without killing sessions:
+
+```elixir
+# Recompile agent module
+iex> r Loom.Agents.Researcher
+{:reloaded, Loom.Agents.Researcher}
+
+# New calls use updated code immediately
+```
+
+## Challenges
+
+### Cost Management
+
+Multiple agents = multiple LLM calls. Mitigation:
+
+- Use weak models (Haiku) for read-only tasks
+- Cache research results in ETS
+- Reuse researcher agents across requests
+
+### Coordination Overhead
+
+Message passing adds latency. Mitigation:
+
+- Run independent tasks in parallel
+- Use `Task.async_stream` with backpressure
+- Batch related research into single agent calls
+
+### Debugging
+
+Multiple concurrent agents are harder to debug. Mitigation:
+
+- Emit structured Telemetry events per agent
+- LiveView shows real-time agent activity
+- Decision graph records all agent reasoning
+
+## Comparison to Other Approaches
+
+| Framework | Coordination | Fault Tolerance | Observability |
+|-----------|-------------|-----------------|---------------|
+| **Loom (BEAM)** | OTP message passing | Supervisors | LiveView + Telemetry |
+| Claude Code | HTTP API | Retry loops | Logs |
+| LangGraph | Python orchestrator | Try/catch | LangSmith |
+| AutoGPT | Sequential executor | None | Print statements |
+
+## Next Steps
+
+Multi-agent coding isn't a feature to bolt on later. On the BEAM, it's the natural evolution.
+
+The primitives are already here:
+
+- `DynamicSupervisor` manages agent lifecycle
+- `Registry` provides discovery
+- `GenServer` handles message passing
+- `Task.async_stream` runs agents in parallel
+- Phoenix LiveView visualizes the swarm in real-time
+- The decision graph provides shared memory
+
+Loom is architected from the ground up to support this. The future of AI coding assistance is swarms, and the BEAM is the best platform to build them.
+
+## Learn More
+
+- [Architecture Deep Dive](/advanced/architecture-deep-dive) — Understand Loom's OTP design
+- [Contributing](/advanced/contributing) — Help build agent swarms
+- [Jido Documentation](https://hexdocs.pm/jido) — The agent framework powering Loom

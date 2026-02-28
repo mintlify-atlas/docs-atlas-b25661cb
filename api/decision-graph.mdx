@@ -1,0 +1,478 @@
+---
+title: Decision Graph API
+description: Track and query AI reasoning decisions with a graph-based knowledge structure
+---
+
+The Decision Graph API provides a persistent, queryable graph of AI decisions, goals, and reasoning. It enables tracking the evolution of architectural decisions, linking related choices, and understanding why the AI made specific recommendations.
+
+## Overview
+
+The `Loom.Decisions.Graph` module maintains a graph database of:
+
+- **Nodes**: Decisions, options, goals, observations, and assumptions
+- **Edges**: Relationships like supports, conflicts, supersedes, and depends_on
+
+This creates an auditable trail of AI reasoning that can be queried, visualized, and used to inform future decisions.
+
+## Nodes
+
+### Node Types
+
+Decision nodes can be one of:
+
+- `:decision`: A concrete choice made by the AI
+- `:option`: A potential alternative considered
+- `:goal`: A desired outcome or objective
+- `:observation`: A fact or constraint discovered during analysis
+- `:assumption`: A working assumption made during reasoning
+
+### Node Status
+
+- `:active`: Currently in effect
+- `:superseded`: Replaced by a newer decision
+- `:rejected`: Considered but not chosen
+
+### add_node/1
+
+Create a new decision node.
+
+```elixir
+{:ok, node} = Loom.Decisions.Graph.add_node(%{
+  node_type: :decision,
+  title: "Use Phoenix LiveView for UI",
+  description: "Adopt LiveView for real-time UI updates without custom JS",
+  status: :active,
+  session_id: "session-123",
+  tags: ["architecture", "frontend"],
+  metadata: %{
+    considered_at: DateTime.utc_now(),
+    impact: "high"
+  }
+})
+```
+
+<ParamField path="node_type" type="atom()" required>
+  One of: `:decision`, `:option`, `:goal`, `:observation`, `:assumption`
+</ParamField>
+
+<ParamField path="title" type="String.t()" required>
+  Short, descriptive title for the node.
+</ParamField>
+
+<ParamField path="description" type="String.t()" optional>
+  Detailed explanation of the decision or observation.
+</ParamField>
+
+<ParamField path="status" type="atom()" default=":active">
+  Node status: `:active`, `:superseded`, or `:rejected`
+</ParamField>
+
+<ParamField path="session_id" type="String.t()" optional>
+  Associate this node with a specific session.
+</ParamField>
+
+<ParamField path="tags" type="[String.t()]" default="[]">
+  Categorization tags for filtering and search.
+</ParamField>
+
+<ParamField path="metadata" type="map()" default="%{}">
+  Arbitrary JSON-serializable metadata.
+</ParamField>
+
+<ParamField path="change_id" type="String.t()" optional>
+  UUID to group related changes. Auto-generated if not provided.
+</ParamField>
+
+<ResponseField name="{:ok, node}" type="{:ok, %DecisionNode{}}">
+  The created node struct with assigned ID and timestamps.
+</ResponseField>
+
+<ResponseField name="{:error, changeset}" type="{:error, Ecto.Changeset.t()}">
+  Validation errors if node creation failed.
+</ResponseField>
+
+### get_node/1
+
+Retrieve a node by ID.
+
+```elixir
+node = Loom.Decisions.Graph.get_node("550e8400-e29b-41d4-a716-446655440000")
+```
+
+<ResponseField name="node" type="%DecisionNode{} | nil">
+  The node struct or `nil` if not found.
+</ResponseField>
+
+### get_node!/1
+
+Retrieve a node by ID, raising if not found.
+
+```elixir
+node = Loom.Decisions.Graph.get_node!("550e8400-e29b-41d4-a716-446655440000")
+# Raises Ecto.NoResultsError if not found
+```
+
+### update_node/2
+
+Update an existing node.
+
+```elixir
+# Using a node struct
+node = Loom.Decisions.Graph.get_node!(node_id)
+{:ok, updated} = Loom.Decisions.Graph.update_node(node, %{
+  status: :superseded,
+  description: "Updated reasoning"
+})
+
+# Using just the ID
+{:ok, updated} = Loom.Decisions.Graph.update_node(node_id, %{
+  tags: ["architecture", "deprecated"]
+})
+```
+
+<ParamField path="node" type="%DecisionNode{} | String.t()">
+  Either the node struct or node ID.
+</ParamField>
+
+<ParamField path="attrs" type="map()">
+  Map of attributes to update.
+</ParamField>
+
+<ResponseField name="{:ok, node}" type="{:ok, %DecisionNode{}}">
+  The updated node.
+</ResponseField>
+
+<ResponseField name="{:error, reason}" type="{:error, term()}">
+  Error details (`:not_found` or validation errors).
+</ResponseField>
+
+### delete_node/1
+
+Delete a node by ID.
+
+```elixir
+{:ok, deleted_node} = Loom.Decisions.Graph.delete_node(node_id)
+```
+
+<Warning>
+Deleting a node does not cascade-delete associated edges. Orphaned edges may remain in the graph.
+</Warning>
+
+### list_nodes/1
+
+Query nodes with optional filters.
+
+```elixir
+# All active decisions
+decisions = Loom.Decisions.Graph.list_nodes(
+  node_type: :decision,
+  status: :active
+)
+
+# All nodes for a session
+session_nodes = Loom.Decisions.Graph.list_nodes(
+  session_id: "session-123"
+)
+
+# All nodes
+all_nodes = Loom.Decisions.Graph.list_nodes()
+```
+
+<ParamField path="filters" type="keyword()" default="[]">
+  Filter criteria:
+  - `node_type: atom()` - Filter by node type
+  - `status: atom()` - Filter by status
+  - `session_id: String.t()` - Filter by session
+</ParamField>
+
+<ResponseField name="nodes" type="[%DecisionNode{}]">
+  List of matching nodes.
+</ResponseField>
+
+## Edges
+
+Edges represent relationships between nodes in the decision graph.
+
+### Edge Types
+
+- `:supports`: This decision supports another
+- `:conflicts`: This decision conflicts with another
+- `:supersedes`: This decision replaces an older one
+- `:depends_on`: This decision depends on another
+- `:implements`: This decision implements a goal
+- `:considers`: This decision considered an option
+
+### add_edge/4
+
+Create a relationship between two nodes.
+
+```elixir
+{:ok, edge} = Loom.Decisions.Graph.add_edge(
+  decision_node_id,
+  goal_node_id,
+  :implements,
+  rationale: "This decision directly implements the stated goal",
+  weight: 0.9
+)
+```
+
+<ParamField path="from_id" type="String.t()" required>
+  Source node ID.
+</ParamField>
+
+<ParamField path="to_id" type="String.t()" required>
+  Target node ID.
+</ParamField>
+
+<ParamField path="edge_type" type="atom()" required>
+  Relationship type: `:supports`, `:conflicts`, `:supersedes`, `:depends_on`, `:implements`, `:considers`
+</ParamField>
+
+<ParamField path="opts" type="keyword()" default="[]">
+  Optional parameters:
+  - `rationale: String.t()` - Explanation for this relationship
+  - `weight: float()` - Relationship strength (0.0 to 1.0)
+</ParamField>
+
+<ResponseField name="{:ok, edge}" type="{:ok, %DecisionEdge{}}">
+  The created edge struct.
+</ResponseField>
+
+### list_edges/1
+
+Query edges with optional filters.
+
+```elixir
+# All edges of a specific type
+supports = Loom.Decisions.Graph.list_edges(edge_type: :supports)
+
+# All edges from a node
+outgoing = Loom.Decisions.Graph.list_edges(from_node_id: node_id)
+
+# All edges to a node
+incoming = Loom.Decisions.Graph.list_edges(to_node_id: node_id)
+```
+
+<ParamField path="filters" type="keyword()" default="[]">
+  Filter criteria:
+  - `edge_type: atom()` - Filter by relationship type
+  - `from_node_id: String.t()` - Filter by source node
+  - `to_node_id: String.t()` - Filter by target node
+</ParamField>
+
+<ResponseField name="edges" type="[%DecisionEdge{}]">
+  List of matching edges.
+</ResponseField>
+
+## Convenience Functions
+
+### active_goals/0
+
+Get all active goal nodes.
+
+```elixir
+goals = Loom.Decisions.Graph.active_goals()
+
+Enum.each(goals, fn goal ->
+  IO.puts("Goal: #{goal.title}")
+end)
+```
+
+<ResponseField name="goals" type="[%DecisionNode{}]">
+  All nodes with `node_type: :goal` and `status: :active`.
+</ResponseField>
+
+### recent_decisions/1
+
+Get the most recent decisions.
+
+```elixir
+recent = Loom.Decisions.Graph.recent_decisions(20)
+
+Enum.each(recent, fn decision ->
+  IO.puts("[#{decision.inserted_at}] #{decision.title}")
+end)
+```
+
+<ParamField path="limit" type="integer()" default="10">
+  Maximum number of decisions to return.
+</ParamField>
+
+<ResponseField name="decisions" type="[%DecisionNode{}]">
+  Recent decisions and options, ordered by insertion time (newest first).
+</ResponseField>
+
+### supersede/3
+
+Mark an old decision as superseded by a new one.
+
+```elixir
+{:ok, edge} = Loom.Decisions.Graph.supersede(
+  old_decision_id,
+  new_decision_id,
+  "New approach uses async processing for better performance"
+)
+```
+
+This function:
+1. Creates a `:supersedes` edge from new to old
+2. Updates the old node's status to `:superseded`
+3. Runs both operations in a database transaction
+
+<ParamField path="old_node_id" type="String.t()">
+  ID of the decision being superseded.
+</ParamField>
+
+<ParamField path="new_node_id" type="String.t()">
+  ID of the decision that replaces it.
+</ParamField>
+
+<ParamField path="rationale" type="String.t()">
+  Explanation of why the decision was superseded.
+</ParamField>
+
+<ResponseField name="{:ok, edge}" type="{:ok, %DecisionEdge{}}">
+  The created supersedes edge.
+</ResponseField>
+
+<ResponseField name="{:error, reason}" type="{:error, term()}">
+  Error from either edge creation or node update.
+</ResponseField>
+
+## Complete Example
+
+```elixir
+alias Loom.Decisions.Graph
+
+# Create a goal
+{:ok, goal} = Graph.add_node(%{
+  node_type: :goal,
+  title: "Improve API response time",
+  description: "Reduce p95 latency from 500ms to 200ms",
+  status: :active,
+  session_id: "perf-session-1"
+})
+
+# Create multiple options
+{:ok, option1} = Graph.add_node(%{
+  node_type: :option,
+  title: "Add Redis cache",
+  description: "Cache frequent DB queries in Redis",
+  metadata: %{estimated_impact: "30% improvement"}
+})
+
+{:ok, option2} = Graph.add_node(%{
+  node_type: :option,
+  title: "Database query optimization",
+  description: "Add indexes and optimize N+1 queries",
+  metadata: %{estimated_impact: "50% improvement"}
+})
+
+# Link options to goal
+Graph.add_edge(option1.id, goal.id, :implements,
+  rationale: "Caching reduces database load"
+)
+
+Graph.add_edge(option2.id, goal.id, :implements,
+  rationale: "Query optimization directly addresses root cause"
+)
+
+# Make a decision
+{:ok, decision} = Graph.add_node(%{
+  node_type: :decision,
+  title: "Use database query optimization",
+  description: "Implement query optimization as primary solution",
+  status: :active,
+  session_id: "perf-session-1"
+})
+
+# Link decision to chosen option
+Graph.add_edge(decision.id, option2.id, :implements,
+  rationale: "Best long-term solution with highest impact",
+  weight: 1.0
+)
+
+# Mark other option as rejected
+Graph.update_node(option1, %{status: :rejected})
+
+# Add an observation
+{:ok, obs} = Graph.add_node(%{
+  node_type: :observation,
+  title: "Most queries missing indexes",
+  description: "70% of slow queries lack appropriate indexes",
+  session_id: "perf-session-1"
+})
+
+# Link observation to decision
+Graph.add_edge(decision.id, obs.id, :depends_on,
+  rationale: "This observation informed the decision"
+)
+
+# Later: supersede with improved approach
+{:ok, new_decision} = Graph.add_node(%{
+  node_type: :decision,
+  title: "Combine query optimization with caching",
+  description: "Use both approaches for maximum impact",
+  status: :active,
+  session_id: "perf-session-2"
+})
+
+Graph.supersede(
+  decision.id,
+  new_decision.id,
+  "Testing showed combined approach yields 60% improvement"
+)
+
+# Query the graph
+active_decisions = Graph.list_nodes(node_type: :decision, status: :active)
+all_goals = Graph.active_goals()
+recent = Graph.recent_decisions(10)
+
+# Find all decisions that implement a goal
+implementations = Graph.list_edges(
+  to_node_id: goal.id,
+  edge_type: :implements
+)
+
+Enum.each(implementations, fn edge ->
+  decision = Graph.get_node(edge.from_node_id)
+  IO.puts("Decision: #{decision.title}")
+  IO.puts("Rationale: #{edge.rationale}")
+end)
+```
+
+## Schema Reference
+
+### DecisionNode Schema
+
+```elixir
+%DecisionNode{
+  id: String.t(),                    # UUID
+  node_type: atom(),                 # :decision | :option | :goal | :observation | :assumption
+  title: String.t(),                 # Short description
+  description: String.t() | nil,     # Detailed explanation
+  status: atom(),                    # :active | :superseded | :rejected
+  session_id: String.t() | nil,      # Associated session
+  tags: [String.t()],                # Categorization tags
+  metadata: map(),                   # Arbitrary JSON data
+  change_id: String.t(),             # Groups related changes
+  inserted_at: DateTime.t(),         # Creation timestamp
+  updated_at: DateTime.t()           # Last update timestamp
+}
+```
+
+### DecisionEdge Schema
+
+```elixir
+%DecisionEdge{
+  id: String.t(),                    # UUID
+  from_node_id: String.t(),          # Source node ID
+  to_node_id: String.t(),            # Target node ID
+  edge_type: atom(),                 # :supports | :conflicts | :supersedes | :depends_on | :implements | :considers
+  rationale: String.t() | nil,       # Explanation
+  weight: float() | nil,             # Relationship strength (0.0-1.0)
+  change_id: String.t(),             # Groups related changes
+  inserted_at: DateTime.t(),         # Creation timestamp
+  updated_at: DateTime.t()           # Last update timestamp
+}
+```

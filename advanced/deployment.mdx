@@ -1,0 +1,513 @@
+---
+title: 'Deployment'
+description: 'Deploy Loom to production as a web service, standalone binary, or Docker container'
+---
+
+## Deployment Options
+
+Loom can be deployed in several configurations:
+
+1. **Standalone Binary** — Self-contained executable for single-user deployments
+2. **OTP Release** — Traditional Elixir release for server environments
+3. **Docker Container** — Containerized deployment (coming soon)
+4. **Fly.io / Render** — Platform-as-a-Service deployment
+
+## Standalone Binary Deployment
+
+The simplest deployment for single-user or team use.
+
+### Build
+
+```bash
+MIX_ENV=prod mix release loom
+```
+
+### Deploy
+
+```bash
+# Copy binary to target server
+scp burrito_out/loom_linux_x86_64 user@server:/usr/local/bin/loom
+
+# On server
+chmod +x /usr/local/bin/loom
+
+# Run (starts web UI and CLI)
+loom
+```
+
+### Configuration
+
+Set environment variables before running:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+export PORT=4200
+export LOOM_DB_PATH="/var/lib/loom/loom.db"
+export SECRET_KEY_BASE="$(openssl rand -base64 48)"
+
+loom
+```
+
+## OTP Release Deployment
+
+For traditional server deployments with process supervision.
+
+### Build
+
+```bash
+MIX_ENV=prod mix release loom
+```
+
+### Deploy via Tarball
+
+```bash
+# Package release
+tar -czf loom-release.tar.gz -C _build/prod/rel/loom .
+
+# Copy to server
+scp loom-release.tar.gz user@server:/opt/loom/
+
+# On server
+cd /opt/loom
+tar -xzf loom-release.tar.gz
+
+# Run migrations
+./bin/loom eval "Loom.Release.migrate()"
+
+# Start
+./bin/loom start
+```
+
+### Systemd Service
+
+Create `/etc/systemd/system/loom.service`:
+
+```ini
+[Unit]
+Description=Loom AI Coding Assistant
+After=network.target
+
+[Service]
+Type=forking
+User=loom
+Group=loom
+WorkingDirectory=/opt/loom
+Environment=PORT=4200
+Environment=LOOM_DB_PATH=/var/lib/loom/loom.db
+Environment=SECRET_KEY_BASE=<your-secret-key-base>
+Environment=ANTHROPIC_API_KEY=<your-api-key>
+EnvironmentFile=-/etc/loom/environment
+ExecStart=/opt/loom/bin/loom start
+ExecStop=/opt/loom/bin/loom stop
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl enable loom
+sudo systemctl start loom
+sudo systemctl status loom
+```
+
+### Environment File
+
+Create `/etc/loom/environment`:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+SECRET_KEY_BASE=...
+PORT=4200
+LOOM_DB_PATH=/var/lib/loom/loom.db
+PHX_HOST=loom.example.com
+```
+
+Set permissions:
+
+```bash
+sudo chmod 600 /etc/loom/environment
+sudo chown loom:loom /etc/loom/environment
+```
+
+## Reverse Proxy Setup
+
+### Nginx
+
+```nginx
+upstream loom_backend {
+  server 127.0.0.1:4200;
+}
+
+server {
+  listen 80;
+  server_name loom.example.com;
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name loom.example.com;
+
+  ssl_certificate /etc/letsencrypt/live/loom.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/loom.example.com/privkey.pem;
+
+  # Phoenix LiveView requires WebSocket support
+  location / {
+    proxy_pass http://loom_backend;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400;
+  }
+}
+```
+
+### Caddy
+
+Create a `Caddyfile`:
+
+```caddy
+loom.example.com {
+  reverse_proxy localhost:4200
+}
+```
+
+Caddy automatically handles HTTPS and WebSockets.
+
+## Cloud Platform Deployment
+
+### Fly.io
+
+Loom works well on Fly.io with minimal configuration.
+
+#### Prerequisites
+
+```bash
+# Install flyctl
+curl -L https://fly.io/install.sh | sh
+
+# Login
+flyctl auth login
+```
+
+#### Initialize App
+
+```bash
+flyctl launch
+```
+
+Select:
+- App name: `loom`
+- Region: closest to your users
+- Database: No (Loom uses SQLite)
+
+#### Set Secrets
+
+```bash
+flyctl secrets set ANTHROPIC_API_KEY="sk-ant-..."
+flyctl secrets set SECRET_KEY_BASE="$(openssl rand -base64 48)"
+```
+
+#### Deploy
+
+```bash
+flyctl deploy
+```
+
+#### Custom Domain
+
+```bash
+flyctl certs add loom.example.com
+```
+
+### Render
+
+Deploy as a Web Service:
+
+1. Connect GitHub repository
+2. Select **Web Service**
+3. Build Command: `mix deps.get && mix assets.deploy && mix release loom`
+4. Start Command: `_build/prod/rel/loom/bin/loom start`
+5. Add environment variables:
+   - `ANTHROPIC_API_KEY`
+   - `SECRET_KEY_BASE`
+   - `DATABASE_PATH=/var/data/loom.db`
+6. Add persistent disk at `/var/data`
+
+## Database Management
+
+### Backup
+
+```bash
+# SQLite backup with .backup command
+sqlite3 ~/.loom/loom.db ".backup /backup/loom-$(date +%Y%m%d).db"
+
+# Or simple file copy (stop Loom first)
+cp ~/.loom/loom.db /backup/loom-$(date +%Y%m%d).db
+```
+
+### Restore
+
+```bash
+# Stop Loom
+sudo systemctl stop loom
+
+# Restore database
+cp /backup/loom-20260228.db ~/.loom/loom.db
+
+# Start Loom
+sudo systemctl start loom
+```
+
+### Automated Backups
+
+Create `/etc/cron.daily/loom-backup`:
+
+```bash
+#!/bin/bash
+BACKUP_DIR="/var/backups/loom"
+DB_PATH="/var/lib/loom/loom.db"
+DATE=$(date +%Y%m%d)
+
+mkdir -p $BACKUP_DIR
+sqlite3 $DB_PATH ".backup $BACKUP_DIR/loom-$DATE.db"
+
+# Keep last 30 days
+find $BACKUP_DIR -name "loom-*.db" -mtime +30 -delete
+```
+
+Make executable:
+
+```bash
+sudo chmod +x /etc/cron.daily/loom-backup
+```
+
+## Monitoring
+
+### Phoenix LiveDashboard
+
+Access at `https://loom.example.com/dashboard`
+
+- Metrics: Request rates, database queries, memory usage
+- Processes: Active sessions, GenServer states
+- ETS tables: Config, repo index, telemetry
+- System info: Erlang VM stats, port usage
+
+### Telemetry
+
+Loom emits Telemetry events for:
+
+- `[:loom, :session, :llm_request, :start | :stop | :exception]`
+- `[:loom, :session, :tool_execute, :start | :stop | :exception]`
+- `[:loom, :session, :cost, :update]`
+
+Integrate with external monitoring:
+
+```elixir
+# In config/runtime.exs
+Telemetry.attach_many(
+  "loom-metrics",
+  [
+    [:loom, :session, :llm_request, :stop],
+    [:loom, :session, :tool_execute, :stop]
+  ],
+  &MyApp.TelemetryHandler.handle_event/4,
+  nil
+)
+```
+
+### Health Check Endpoint
+
+Loom doesn't include a built-in health endpoint. Add one in your deployment:
+
+```elixir
+# lib/loom_web/router.ex
+scope "/", LoomWeb do
+  get "/health", HealthController, :check
+end
+
+# lib/loom_web/controllers/health_controller.ex
+defmodule LoomWeb.HealthController do
+  use LoomWeb, :controller
+
+  def check(conn, _params) do
+    # Check database connectivity
+    case Loom.Repo.query("SELECT 1") do
+      {:ok, _} -> json(conn, %{status: "ok"})
+      _ -> conn |> put_status(503) |> json(%{status: "error"})
+    end
+  end
+end
+```
+
+## Security Considerations
+
+### Authentication
+
+Loom doesn't include built-in authentication. Add your own:
+
+```elixir
+# lib/loom_web/auth.ex
+defmodule LoomWeb.Auth do
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(conn, _opts) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] -> verify_token(conn, token)
+      _ -> unauthorized(conn)
+    end
+  end
+
+  defp verify_token(conn, token) do
+    if token == System.get_env("AUTH_TOKEN") do
+      conn
+    else
+      unauthorized(conn)
+    end
+  end
+
+  defp unauthorized(conn) do
+    conn
+    |> put_status(401)
+    |> Phoenix.Controller.json(%{error: "Unauthorized"})
+    |> halt()
+  end
+end
+```
+
+Add to router:
+
+```elixir
+pipeline :authenticated do
+  plug LoomWeb.Auth
+end
+
+scope "/", LoomWeb do
+  pipe_through [:browser, :authenticated]
+  live "/", WorkspaceLive
+end
+```
+
+### API Keys
+
+Store API keys securely:
+
+```bash
+# Never commit to git
+echo ".env*" >> .gitignore
+
+# Use secret management
+flyctl secrets set ANTHROPIC_API_KEY="..."
+
+# Or environment variables only
+export ANTHROPIC_API_KEY="..."
+```
+
+### Firewall Rules
+
+```bash
+# Allow only HTTPS
+sudo ufw allow 443/tcp
+sudo ufw deny 4200/tcp  # Block direct Phoenix access
+```
+
+### Database Permissions
+
+```bash
+sudo chown loom:loom /var/lib/loom/loom.db
+sudo chmod 600 /var/lib/loom/loom.db
+```
+
+## Performance Tuning
+
+### BEAM VM
+
+Set in `config/runtime.exs`:
+
+```elixir
+config :loom, Loom.Repo,
+  pool_size: 10  # Increase for more concurrent sessions
+
+config :loom, LoomWeb.Endpoint,
+  http: [
+    port: String.to_integer(System.get_env("PORT") || "4200"),
+    transport_options: [num_acceptors: 100]
+  ]
+```
+
+### SQLite Optimization
+
+```bash
+# Run VACUUM periodically
+sqlite3 ~/.loom/loom.db "VACUUM;"
+
+# Analyze query plans
+sqlite3 ~/.loom/loom.db "ANALYZE;"
+```
+
+## Scaling Considerations
+
+Loom's current architecture is optimized for single-node deployment:
+
+- **Sessions** are in-memory GenServers (lost on restart)
+- **Persistence** uses SQLite (single-writer)
+- **PubSub** broadcasts locally via Phoenix.PubSub
+
+For multi-node deployment:
+
+1. Switch `Loom.Repo` to PostgreSQL
+2. Configure distributed PubSub with Redis
+3. Use `Horde` for distributed session registry
+
+## Troubleshooting
+
+### Logs
+
+```bash
+# Journalctl (systemd)
+sudo journalctl -u loom -f
+
+# Release logs
+tail -f /opt/loom/logs/erlang.log
+```
+
+### Remote Console
+
+```bash
+# Attach to running release
+/opt/loom/bin/loom remote
+
+# Check running processes
+iex> Process.list() |> length()
+
+# Inspect session state
+iex> Loom.Session.Manager.list_sessions()
+```
+
+### Memory Issues
+
+```bash
+# Check BEAM memory
+iex> :erlang.memory()
+
+# Garbage collect all processes
+iex> for pid <- Process.list(), do: :erlang.garbage_collect(pid)
+```
+
+## Next Steps
+
+- [Release Configuration](/advanced/releases) — Customize release settings
+- [Architecture Deep Dive](/advanced/architecture-deep-dive) — Understand how Loom works
+- [Contributing](/advanced/contributing) — Help improve Loom

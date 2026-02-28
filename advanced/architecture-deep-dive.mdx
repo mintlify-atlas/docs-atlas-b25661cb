@@ -1,0 +1,521 @@
+---
+title: Architecture Deep Dive
+description: Technical deep dive into Loom's OTP supervision tree, agent loop, and intelligence systems
+---
+
+## System Architecture
+
+Loom is built as a proper OTP application with a supervision tree, fault tolerance, and concurrent session management. This architecture treats AI coding assistance as a long-running distributed system, not a script.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      INTERFACES                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │   CLI (Owl)   │  │ LiveView Web │  │ Headless API │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
+│         └─────────────────┼─────────────────┘            │
+├───────────────────────────┼──────────────────────────────┤
+│  Session Layer            │                              │
+│  ┌────────────────────────┴───────────────────────────┐  │
+│  │ Session GenServer (per-conversation)                │  │
+│  │  ├── Jido.AI.Agent (ReAct reasoning loop)          │  │
+│  │  ├── Context Window (token-budgeted history)       │  │
+│  │  ├── Decision Graph (persistent reasoning memory)  │  │
+│  │  └── Permission Manager (per-tool approval)        │  │
+│  └────────────────────────────────────────────────────┘  │
+├──────────────────────────────────────────────────────────┤
+│  Tool Layer (11 Jido Actions)                            │
+│  FileRead │ FileWrite │ FileEdit │ FileSearch            │
+│  Shell │ Git │ SubAgent │ ContentSearch                  │
+│  DecisionLog │ DecisionQuery │ DirectoryList             │
+├──────────────────────────────────────────────────────────┤
+│  Intelligence Layer                                      │
+│  Decision Graph │ Repo Intel │ Context Window            │
+│  (DAG in SQLite) │ (ETS index) │ (token budget)          │
+├──────────────────────────────────────────────────────────┤
+│  LLM Layer: req_llm (16+ providers, 665+ models)        │
+└──────────────────────────────────────────────────────────┘
+```
+
+## OTP Supervision Tree
+
+The application is supervised by `Loom.Application`:
+
+```elixir
+defmodule Loom.Application do
+  use Application
+
+  def start(_type, _args) do
+    # Auto-migrate in release mode
+    if release_mode?(), do: Loom.Release.migrate()
+
+    # Initialize tree-sitter symbol cache
+    Loom.RepoIntel.TreeSitter.init_cache()
+
+    children = [
+      # Storage
+      Loom.Repo,
+      
+      # Configuration
+      Loom.Config,
+      
+      # PubSub for session event broadcasting
+      {Phoenix.PubSub, name: Loom.PubSub},
+      
+      # Telemetry metrics aggregation
+      Loom.Telemetry.Metrics,
+      
+      # Session registry for pid lookup by session_id
+      {Registry, keys: :unique, name: Loom.SessionRegistry},
+      
+      # LSP server management
+      Loom.LSP.Supervisor,
+      
+      # Repo index
+      Loom.RepoIntel.Index,
+      
+      # Session management
+      {DynamicSupervisor, name: Loom.SessionSupervisor, strategy: :one_for_one}
+    ] ++
+      maybe_start_watcher() ++
+      maybe_start_mcp_server() ++
+      maybe_start_mcp_clients() ++
+      maybe_start_endpoint()
+
+    Supervisor.start_link(children, strategy: :one_for_one)
+  end
+end
+```
+
+### Supervision Strategy
+
+Loom uses a `:one_for_one` strategy:
+
+- If `Loom.Repo` crashes, only the database connection restarts
+- If a session crashes, other sessions continue running
+- If the entire app crashes, the BEAM VM restarts it
+
+### DynamicSupervisor for Sessions
+
+Each coding session is a separate GenServer process:
+
+```elixir
+{DynamicSupervisor, name: Loom.SessionSupervisor, strategy: :one_for_one}
+```
+
+Sessions are started dynamically:
+
+```elixir
+DynamicSupervisor.start_child(
+  Loom.SessionSupervisor,
+  {Loom.Session, session_id: "abc-123", model: "anthropic:claude-sonnet-4-6"}
+)
+```
+
+If a session crashes (OOM, timeout, unhandled exception), it's automatically restarted with its state recovered from SQLite.
+
+## Session Architecture
+
+The `Loom.Session` GenServer is the heart of Loom.
+
+### State Structure
+
+```elixir
+defstruct [
+  :id,              # Session UUID
+  :model,           # "anthropic:claude-sonnet-4-6"
+  :project_path,    # "/path/to/project"
+  :db_session,      # Ecto schema
+  :status,          # :idle | :thinking | :executing_tool
+  messages: [],     # Conversation history
+  tools: [],        # List of Jido.Action modules
+  auto_approve: false,
+  pending_permission: nil,
+  mode: :normal     # :normal | :architect
+]
+```
+
+### Message Flow
+
+1. **User input** → `Session.send_message/2`
+2. **Persist** → `Persistence.save_message/1` → SQLite
+3. **Context window** → `ContextWindow.build_messages/3` → token-budgeted history
+4. **System prompt injection** → Decision graph context + repo map
+5. **LLM call** → `ReqLLM.generate_text/3`
+6. **Response classification** → `ReqLLM.Response.classify/1`
+7. **Tool execution** → `Jido.Exec.run/4` → Result
+8. **Loop** → Repeat until final answer
+
+### ReAct Reasoning Loop
+
+Loom uses a ReAct (Reasoning + Acting) strategy via `Jido.AI.Agent`:
+
+```elixir
+defp agent_loop(state, iteration) do
+  # Build system prompt with context
+  system_prompt = build_system_prompt(state)
+
+  # Window messages to fit context limit
+  windowed = ContextWindow.build_messages(
+    state.messages, 
+    system_prompt,
+    model: state.model,
+    session_id: state.id,
+    project_path: state.project_path
+  )
+
+  # Call LLM with tool definitions
+  case call_llm(provider, model_id, windowed, tools: tool_defs) do
+    {:ok, %{type: :tool_calls}} ->
+      # Execute tools and continue
+      execute_tool_calls(tool_calls, state)
+      agent_loop(state, iteration + 1)
+
+    {:ok, %{type: :final_answer}} ->
+      # Return answer to user
+      {:ok, response_text, state}
+  end
+end
+```
+
+The loop:
+
+1. Constructs a system prompt with decision context and repo map
+2. Builds a token-windowed message list
+3. Calls the LLM with tool definitions
+4. Classifies the response (tool calls or final answer)
+5. Executes tools if requested
+6. Repeats until the LLM returns a final answer (max 25 iterations)
+
+### Tool Execution
+
+Tools are `Jido.Action` modules with automatic schema validation:
+
+```elixir
+defmodule Loom.Tools.FileRead do
+  use Jido.Action,
+    name: "file_read",
+    description: "Read a file from the project",
+    schema: [
+      file_path: [type: :string, required: true]
+    ]
+
+  def run(params, context) do
+    path = Loom.Tool.safe_path!(params.file_path, context.project_path)
+    content = File.read!(path)
+    {:ok, %{result: content}}
+  end
+end
+```
+
+Tool dispatch:
+
+```elixir
+case Jido.AI.ToolAdapter.lookup_action(tool_name, state.tools) do
+  {:ok, tool_module} ->
+    # Check permissions
+    case check_permission(tool_name, tool_path, state) do
+      :allowed ->
+        result = Jido.Exec.run(tool_module, tool_args, context)
+        record_tool_result(state, tool_name, result)
+
+      :pending ->
+        # Broadcast permission request to UI
+        broadcast(state.id, {:permission_request, tool_name, tool_path})
+        {:pending, state}
+    end
+end
+```
+
+## Intelligence Systems
+
+### Context Window Management
+
+The `Loom.Session.ContextWindow` module manages token budgets:
+
+```elixir
+@zone_defaults %{
+  system_prompt: 2048,
+  decision_context: 1024,
+  repo_map: 2048,
+  tool_definitions: 2048,
+  reserved_output: 4096
+}
+
+def allocate_budget(model, opts) do
+  total = model_limit(model)  # e.g. 200k for Claude Sonnet
+  
+  zones = %{
+    system_prompt: 2048,
+    decision_context: 1024,
+    repo_map: 2048,
+    tool_definitions: 2048,
+    reserved_output: 4096
+  }
+  
+  zone_sum = Enum.sum(Map.values(zones))
+  history = max(total - zone_sum, 0)
+  
+  Map.put(zones, :history, history)
+end
+```
+
+For Claude Sonnet 4 (200k context):
+
+- System prompt: 2k tokens
+- Decision context: 1k tokens
+- Repo map: 2k tokens
+- Tool definitions: 2k tokens
+- Reserved output: 4k tokens
+- **Conversation history**: 189k tokens
+
+### Decision Graph
+
+Inspired by [Deciduous](https://github.com/juspay/deciduous), Loom maintains a persistent DAG of decisions.
+
+#### Node Types
+
+- **goal** — High-level objective ("Refactor auth module")
+- **decision** — A choice made during reasoning
+- **option** — An alternative considered but not chosen
+- **action** — A tool execution (file edit, shell command)
+- **outcome** — Result of an action (success/failure)
+- **observation** — Information gathered (test result, error message)
+- **revisit** — A note to reconsider a past decision
+
+#### Edge Types
+
+- **leads_to** — Causal relationship
+- **chosen** — Selected option
+- **rejected** — Discarded option
+- **requires** — Dependency
+- **blocks** — Conflict
+- **enables** — Unlocks new path
+- **supersedes** — Replaces old decision
+
+#### Storage Schema
+
+```sql
+CREATE TABLE decision_nodes (
+  id TEXT PRIMARY KEY,
+  node_type TEXT NOT NULL,  -- goal | decision | option | action | outcome | observation | revisit
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT,               -- active | completed | rejected | stale
+  confidence INTEGER,        -- 0-100
+  session_id TEXT,
+  change_id TEXT,
+  inserted_at TIMESTAMP
+);
+
+CREATE TABLE decision_edges (
+  id TEXT PRIMARY KEY,
+  from_node_id TEXT REFERENCES decision_nodes(id),
+  to_node_id TEXT REFERENCES decision_nodes(id),
+  edge_type TEXT NOT NULL,   -- leads_to | chosen | rejected | requires | blocks | enables | supersedes
+  rationale TEXT,
+  weight REAL,
+  change_id TEXT,
+  inserted_at TIMESTAMP
+);
+```
+
+#### Context Injection
+
+Before each LLM call, active decisions are injected into the system prompt:
+
+```elixir
+defmodule Loom.Decisions.ContextBuilder do
+  def build(session_id, opts \\ []) do
+    max_tokens = Keyword.get(opts, :max_tokens, 1024)
+    
+    # Fetch active goals and recent decisions
+    goals = Graph.list_nodes(session_id: session_id, node_type: :goal, status: :active)
+    decisions = Graph.list_nodes(session_id: session_id, node_type: :decision) 
+                |> Enum.take(10)
+    
+    # Format as markdown
+    context = """
+    ## Active Goals
+    #{format_nodes(goals)}
+    
+    ## Recent Decisions
+    #{format_nodes(decisions)}
+    """
+    
+    # Truncate to budget
+    {:ok, truncate(context, max_tokens)}
+  end
+end
+```
+
+This ensures the LLM remembers:
+
+- What you're trying to accomplish
+- What approaches were tried
+- Why certain options were rejected
+
+### Repo Intelligence
+
+The `Loom.RepoIntel.Index` module maintains an ETS table of file metadata.
+
+#### Index Structure
+
+```elixir
+:ets.new(:loom_repo_index, [:named_table, :set, :public, read_concurrency: true])
+
+# Each entry:
+{
+  "/path/to/file.ex",
+  %{
+    path: "/path/to/file.ex",
+    language: :elixir,
+    size: 4096,
+    mtime: ~U[2026-02-28 10:00:00Z],
+    symbols: ["defmodule Loom.Session", "def send_message"],
+    relevance: 0.85
+  }
+}
+```
+
+#### Symbol Extraction
+
+Loom uses regex-based symbol extraction (tree-sitter coming soon):
+
+```elixir
+defmodule Loom.RepoIntel.RepoMap do
+  def extract_symbols(path, content) do
+    case detect_language(path) do
+      :elixir ->
+        Regex.scan(~r/def(?:module|p?)\s+(\w+)/, content)
+        |> Enum.map(fn [_, name] -> name end)
+
+      :python ->
+        Regex.scan(~r/^(?:def|class)\s+(\w+)/, content, [:multiline])
+        |> Enum.map(fn [_, name] -> name end)
+
+      _ ->
+        []
+    end
+  end
+end
+```
+
+#### Repo Map Generation
+
+The repo map is a token-budgeted outline of the codebase:
+
+```
+lib/loom/session/session.ex:
+  defmodule Loom.Session
+  def send_message
+  def get_history
+  def update_model
+
+lib/loom/agent.ex:
+  defmodule Loom.Agent
+  use Jido.AI.Agent
+
+lib/loom/tools/file_read.ex:
+  defmodule Loom.Tools.FileRead
+  use Jido.Action
+  def run
+```
+
+This gives the LLM a map of the codebase without reading every file.
+
+### Permission System
+
+`Loom.Permissions.Manager` enforces tool approval:
+
+```elixir
+defmodule Loom.Permissions.Manager do
+  def check(tool_name, tool_path, session_id) do
+    cond do
+      auto_approved?(tool_name) -> :allowed
+      granted?(tool_name, tool_path, session_id) -> :allowed
+      true -> :ask
+    end
+  end
+  
+  def grant(tool_name, tool_path, session_id) do
+    Persistence.create_permission_grant(%{
+      session_id: session_id,
+      tool_name: tool_name,
+      path_pattern: tool_path
+    })
+  end
+end
+```
+
+Grants are stored in SQLite and scoped to the session.
+
+## PubSub Event Broadcasting
+
+Loom uses `Phoenix.PubSub` for real-time event streaming to the web UI:
+
+```elixir
+Phoenix.PubSub.broadcast(
+  Loom.PubSub,
+  "session:#{session_id}",
+  {:new_message, session_id, message}
+)
+```
+
+Events:
+
+- `{:session_status, session_id, :thinking | :executing_tool | :idle}`
+- `{:new_message, session_id, %{role: :assistant, content: "..."}}`
+- `{:tool_executing, session_id, "file_read"}`
+- `{:tool_complete, session_id, "file_read", "..."}}`
+- `{:permission_request, session_id, "shell", "mix test"}`
+
+The LiveView subscribes on mount:
+
+```elixir
+Phoenix.PubSub.subscribe(Loom.PubSub, "session:#{session_id}")
+```
+
+And handles events:
+
+```elixir
+def handle_info({:new_message, _, message}, socket) do
+  {:noreply, assign(socket, messages: socket.assigns.messages ++ [message])}
+end
+```
+
+## Telemetry
+
+Loom emits structured telemetry events:
+
+```elixir
+:telemetry.execute(
+  [:loom, :session, :llm_request, :stop],
+  %{duration: 1_500_000},  # microseconds
+  %{session_id: "abc-123", model: "anthropic:claude-sonnet-4-6"}
+)
+```
+
+Events:
+
+- `[:loom, :session, :llm_request, :start | :stop | :exception]`
+- `[:loom, :session, :tool_execute, :start | :stop | :exception]`
+- `[:loom, :session, :cost, :update]`
+
+The web UI aggregates these into a live cost dashboard.
+
+## Why Elixir?
+
+This architecture is only possible on the BEAM:
+
+- **Concurrency without complexity** — Each session is a lightweight process. No thread pools, no GIL.
+- **Fault tolerance** — A crashed session doesn't take down the app. Supervisors restart failed processes.
+- **LiveView** — Real-time UI without JavaScript. The same GenServer powers CLI and web.
+- **Hot code reloading** — Update tools, tweak prompts, add providers—without restarting sessions.
+- **Pattern matching** — Handle LLM response variants cleanly and exhaustively.
+
+## Next Steps
+
+- [Swarm Design](/advanced/swarm-design) — Multi-agent coordination with OTP
+- [Contributing](/advanced/contributing) — Build and test Loom
+- [Releases](/advanced/releases) — Package for deployment

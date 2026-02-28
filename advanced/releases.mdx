@@ -1,0 +1,467 @@
+---
+title: 'Release Configuration'
+description: 'Configure and customize Loom releases for production deployment'
+---
+
+## Overview
+
+Loom uses Mix releases with optional Burrito wrapping for standalone binaries. This guide covers release configuration, customization, and advanced options.
+
+## Release Definition
+
+The release is configured in `mix.exs`:
+
+```elixir
+defp releases do
+  [
+    loom: [
+      steps: [:assemble, &Burrito.wrap/1],
+      burrito: [
+        targets: [
+          macos_aarch64: [os: :darwin, cpu: :aarch64],
+          macos_x86_64: [os: :darwin, cpu: :x86_64],
+          linux_x86_64: [os: :linux, cpu: :x86_64],
+          linux_aarch64: [os: :linux, cpu: :aarch64]
+        ]
+      ],
+      applications: [runtime_tools: :permanent],
+      cookie: "loom_0.1.0"
+    ]
+  ]
+end
+```
+
+## Release Steps
+
+The build process:
+
+1. **`:assemble`** — Mix compiles code and packages OTP release
+2. **`&Burrito.wrap/1`** — Burrito embeds BEAM runtime and creates standalone binary
+
+To build a standard OTP release without Burrito, remove the wrap step:
+
+```elixir
+loom: [
+  steps: [:assemble],
+  applications: [runtime_tools: :permanent]
+]
+```
+
+## Burrito Configuration
+
+### Target Platforms
+
+Define CPU architectures and operating systems:
+
+```elixir
+burrito: [
+  targets: [
+    # Apple Silicon Mac
+    macos_aarch64: [os: :darwin, cpu: :aarch64],
+    
+    # Intel Mac
+    macos_x86_64: [os: :darwin, cpu: :x86_64],
+    
+    # Linux x86_64 (most servers)
+    linux_x86_64: [os: :linux, cpu: :x86_64],
+    
+    # Linux ARM64 (Raspberry Pi, cloud ARM instances)
+    linux_aarch64: [os: :linux, cpu: :aarch64],
+    
+    # Windows (experimental)
+    # windows_x86_64: [os: :windows, cpu: :x86_64]
+  ]
+]
+```
+
+### Build Output
+
+Binaries are written to `burrito_out/`:
+
+```
+burrito_out/
+├── loom_macos_aarch64
+├── loom_macos_x86_64
+├── loom_linux_x86_64
+└── loom_linux_aarch64
+```
+
+### Single Target Build
+
+To build for only the current platform:
+
+```bash
+BURRITO_TARGET=macos_aarch64 MIX_ENV=prod mix release loom
+```
+
+## Runtime Configuration
+
+Loom uses runtime configuration in `config/runtime.exs` for production settings.
+
+### Database Path
+
+```elixir
+config :loom, Loom.Repo,
+  database: System.get_env("LOOM_DB_PATH") || 
+            Path.join([System.user_home!(), ".loom", "loom.db"]),
+  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5")
+```
+
+This allows:
+
+```bash
+# Use default ~/.loom/loom.db
+loom
+
+# Custom path
+LOOM_DB_PATH=/var/lib/loom/loom.db loom
+```
+
+### Web Server Configuration
+
+```elixir
+config :loom, LoomWeb.Endpoint,
+  server: true,  # Always start endpoint in release
+  http: [port: String.to_integer(System.get_env("PORT") || "4200")],
+  url: [host: System.get_env("PHX_HOST") || "localhost"],
+  secret_key_base: System.get_env("SECRET_KEY_BASE") || derive_secret_key_base()
+```
+
+### Conditional Endpoint Start
+
+To disable the web UI and run CLI-only:
+
+```bash
+SERVER_ENABLED=false loom
+```
+
+In `config/runtime.exs`:
+
+```elixir
+config :loom, LoomWeb.Endpoint,
+  server: System.get_env("SERVER_ENABLED", "true") == "true"
+```
+
+## Application Startup
+
+The `Loom.Application` module controls startup behavior:
+
+```elixir
+def start(_type, _args) do
+  # Auto-migrate in release mode
+  if release_mode?(), do: Loom.Release.migrate()
+
+  # Initialize tree-sitter symbol cache
+  Loom.RepoIntel.TreeSitter.init_cache()
+
+  children = [
+    Loom.Repo,                    # Database connection
+    Loom.Config,                  # ETS-backed config
+    {Phoenix.PubSub, name: Loom.PubSub},
+    Loom.Telemetry.Metrics,       # Telemetry aggregation
+    {Registry, keys: :unique, name: Loom.SessionRegistry},
+    Loom.LSP.Supervisor,          # LSP client supervisor
+    Loom.RepoIntel.Index,         # File index
+    {DynamicSupervisor, name: Loom.SessionSupervisor}
+  ] ++
+    maybe_start_watcher() ++      # File watcher (optional)
+    maybe_start_mcp_server() ++   # MCP server (optional)
+    maybe_start_mcp_clients() ++  # MCP clients (optional)
+    maybe_start_endpoint()        # Web UI (optional)
+
+  Supervisor.start_link(children, strategy: :one_for_one)
+end
+```
+
+### Release Detection
+
+```elixir
+defp release_mode? do
+  case :code.priv_dir(:loom) do
+    {:error, _} -> false
+    path -> path |> to_string() |> String.contains?("releases")
+  end
+end
+```
+
+This detects if running as a release and triggers automatic migrations.
+
+## Release Migrations
+
+The `Loom.Release` module provides database management:
+
+```elixir
+defmodule Loom.Release do
+  @app :loom
+
+  def create_db do
+    # Ensures ~/.loom/ directory exists
+    db_path = db_path()
+    db_dir = Path.dirname(db_path)
+    unless File.dir?(db_dir), do: File.mkdir_p!(db_dir)
+    :ok
+  end
+
+  def migrate do
+    # Runs all pending migrations
+    ensure_started()
+    create_db()
+
+    for repo <- repos() do
+      {:ok, _, _} = Ecto.Migrator.with_repo(
+        repo, 
+        &Ecto.Migrator.run(&1, :up, all: true)
+      )
+    end
+
+    :ok
+  end
+
+  def rollback(repo, version) do
+    # Rolls back to specific version
+    ensure_started()
+    {:ok, _, _} = Ecto.Migrator.with_repo(
+      repo,
+      &Ecto.Migrator.run(&1, :down, to: version)
+    )
+  end
+
+  def db_path do
+    # Returns configured database path
+    Application.get_env(@app, Loom.Repo)[:database] ||
+      Path.join([System.user_home!(), ".loom", "loom.db"])
+  end
+end
+```
+
+### Manual Migration Commands
+
+```bash
+# Run migrations
+./loom eval "Loom.Release.migrate()"
+
+# Create database directory
+./loom eval "Loom.Release.create_db()"
+
+# Rollback to version
+./loom eval "Loom.Release.rollback(Loom.Repo, 20260227000001)"
+
+# Check database path
+./loom eval "Loom.Release.db_path() |> IO.puts"
+```
+
+## Distributed Erlang
+
+### Release Cookie
+
+The Erlang distribution cookie is set in `mix.exs`:
+
+```elixir
+loom: [
+  cookie: "loom_0.1.0"
+]
+```
+
+This allows multiple Loom nodes to communicate. For production, use a secure random cookie:
+
+```elixir
+cookie: System.get_env("RELEASE_COOKIE") || "loom_0.1.0"
+```
+
+Then:
+
+```bash
+RELEASE_COOKIE=$(openssl rand -base64 32) mix release loom
+```
+
+### Node Name
+
+Start with a distributed node name:
+
+```bash
+# Long name (FQDN)
+RELEASE_NODE=loom@loom.example.com ./loom start
+
+# Short name (local network)
+RELEASE_NODE=loom@127.0.0.1 ./loom start
+```
+
+### Clustering (Future)
+
+For multi-node deployment, configure libcluster:
+
+```elixir
+config :libcluster,
+  topologies: [
+    loom: [
+      strategy: Cluster.Strategy.Gossip,
+      config: [
+        port: 45892,
+        multicast_addr: "230.1.1.251"
+      ]
+    ]
+  ]
+```
+
+## Environment Variables
+
+### Required
+
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` — At least one LLM provider
+
+### Recommended
+
+- `SECRET_KEY_BASE` — Phoenix secret (auto-generated if missing)
+- `LOOM_DB_PATH` — Database location
+- `PORT` — Web UI port (default 4200)
+
+### Optional
+
+- `PHX_HOST` — Hostname for URL generation
+- `POOL_SIZE` — Ecto connection pool size
+- `RELEASE_NODE` — Distributed Erlang node name
+- `RELEASE_COOKIE` — Erlang cookie for clustering
+- `SERVER_ENABLED` — Enable/disable web UI
+
+## Telemetry Configuration
+
+Loom tracks LLM usage and tool execution via Telemetry.
+
+### Cost Tracking
+
+```elixir
+# Emitted on every LLM response
+[:loom, :session, :cost, :update]
+
+# Metadata:
+%{
+  session_id: "...",
+  model: "anthropic:claude-sonnet-4-6",
+  input_tokens: 1024,
+  output_tokens: 512,
+  cost: 0.015
+}
+```
+
+### Tool Execution
+
+```elixir
+# Emitted for every tool call
+[:loom, :session, :tool_execute, :start]
+[:loom, :session, :tool_execute, :stop]
+[:loom, :session, :tool_execute, :exception]
+
+# Metadata:
+%{
+  session_id: "...",
+  tool_name: "file_read",
+  duration: 42_000  # microseconds
+}
+```
+
+### Custom Handlers
+
+Attach in `config/runtime.exs`:
+
+```elixir
+:telemetry.attach(
+  "loom-cost-logger",
+  [:loom, :session, :cost, :update],
+  fn _event, measurements, metadata, _config ->
+    IO.inspect({metadata.model, measurements.cost})
+  end,
+  nil
+)
+```
+
+## Hot Code Upgrades
+
+Loom doesn't currently support hot upgrades (appup/relup), but you can enable them:
+
+1. Create `lib/loom.appup` with upgrade instructions
+2. Use `:appup` step in release
+
+```elixir
+loom: [
+  steps: [:assemble, :appup],
+  version: @version
+]
+```
+
+## Release Hooks
+
+Run code before/after release commands:
+
+### Pre-Start Hook
+
+Create `rel/hooks/pre_start.sh`:
+
+```bash
+#!/bin/sh
+set -e
+
+echo "Loom starting..."
+mkdir -p ~/.loom
+chmod 700 ~/.loom
+```
+
+Add to release:
+
+```elixir
+loom: [
+  steps: [:assemble, &copy_hooks/1]
+]
+```
+
+## Troubleshooting Releases
+
+### Binary Size
+
+Loom binaries are 50-100MB due to BEAM + dependencies. To reduce:
+
+```bash
+# Strip debug symbols
+strip burrito_out/loom_linux_x86_64
+
+# Compress with UPX (experimental)
+upx --best burrito_out/loom_linux_x86_64
+```
+
+### Missing NIFs
+
+If tree-sitter NIFs fail to load:
+
+```bash
+# Ensure native dependencies are compiled for target
+mix deps.compile tree_sitter --force
+```
+
+### ERTS Not Found
+
+If release can't find Erlang runtime:
+
+```bash
+# Check ERTS version
+ls _build/prod/rel/loom/erts-*
+
+# Verify release structure
+tar -tzf _build/prod/rel/loom/releases/0.1.0/loom.tar.gz
+```
+
+### Database Locked
+
+SQLite only supports one writer:
+
+```bash
+# Check for multiple instances
+pgrep -a loom
+
+# Or use WAL mode for better concurrency
+echo "PRAGMA journal_mode=WAL;" | sqlite3 ~/.loom/loom.db
+```
+
+## Next Steps
+
+- [Deployment Guide](/advanced/deployment) — Deploy to production
+- [Architecture Deep Dive](/advanced/architecture-deep-dive) — Understand OTP supervision
+- [Contributing](/advanced/contributing) — Build and test Loom

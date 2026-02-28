@@ -1,0 +1,344 @@
+---
+title: File Operations
+description: Tools for reading, writing, and editing files in the project
+---
+
+Loom provides three core file operation tools that enable agents to interact with the codebase. All operations are scoped to the project directory and include comprehensive error handling.
+
+## file_read
+
+Reads a file and returns its contents formatted with line numbers.
+
+<ParamField path="file_path" type="string" required>
+  Path to the file relative to project root
+</ParamField>
+
+<ParamField path="offset" type="integer">
+  Line number to start reading from (1-based). Use this to read specific sections of large files.
+</ParamField>
+
+<ParamField path="limit" type="integer">
+  Maximum number of lines to return. Combine with `offset` for pagination.
+</ParamField>
+
+### Returns
+
+Success response includes:
+- File path and total line count in header
+- Line-numbered content (6-character padded line numbers)
+- Count of lines shown
+
+```
+lib/my_app/router.ex (45 lines total, showing 45)
+     1	defmodule MyApp.Router do
+     2	  use Plug.Router
+     3	
+     4	  plug :match
+     5	  plug :dispatch
+...
+```
+
+### Error Cases
+
+<ResponseField name="enoent">
+  File not found at the specified path
+</ResponseField>
+
+<ResponseField name="eisdir">
+  Path points to a directory, not a file
+</ResponseField>
+
+<ResponseField name="path_validation">
+  Path attempts to access outside project directory
+</ResponseField>
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Read entire file
+{:ok, result} = Loom.Tools.FileRead.run(
+  %{file_path: "lib/my_app/router.ex"},
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir Read specific range
+{:ok, result} = Loom.Tools.FileRead.run(
+  %{
+    file_path: "lib/my_app/router.ex",
+    offset: 10,
+    limit: 20
+  },
+  %{project_path: "/home/user/project"}
+)
+# Returns lines 10-29
+```
+
+```elixir Pagination pattern
+# Read first page (lines 1-100)
+Loom.Tools.FileRead.run(
+  %{file_path: "large_file.ex", offset: 1, limit: 100},
+  context
+)
+
+# Read second page (lines 101-200)
+Loom.Tools.FileRead.run(
+  %{file_path: "large_file.ex", offset: 101, limit: 100},
+  context
+)
+```
+</CodeGroup>
+
+<Tip>
+  Use `offset` and `limit` for large files to avoid reading unnecessary content. The header shows total lines, helping you determine if pagination is needed.
+</Tip>
+
+---
+
+## file_write
+
+Writes content to a file, creating parent directories if needed. Overwrites existing files.
+
+<ParamField path="file_path" type="string" required>
+  Path to the file relative to project root
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  The content to write to the file
+</ParamField>
+
+### Returns
+
+Success response includes:
+- Number of bytes written
+- Full path to the written file
+
+```
+Wrote 1234 bytes to /home/user/project/lib/my_app/new_module.ex
+```
+
+### Behavior
+
+<AccordionGroup>
+  <Accordion title="Directory Creation">
+    Parent directories are created automatically:
+    ```elixir
+    # This creates lib/my_app/controllers/ if it doesn't exist
+    FileWrite.run(
+      %{
+        file_path: "lib/my_app/controllers/user_controller.ex",
+        content: "defmodule MyApp.UserController do\nend"
+      },
+      context
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Overwrite Warning">
+    **file_write always overwrites existing files without confirmation.**
+    
+    For editing existing files, use `file_edit` instead to make targeted changes.
+  </Accordion>
+</AccordionGroup>
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Create new file
+{:ok, result} = Loom.Tools.FileWrite.run(
+  %{
+    file_path: "lib/my_app/hello.ex",
+    content: """
+    defmodule MyApp.Hello do
+      def world, do: "Hello, world!"
+    end
+    """
+  },
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir Create nested file
+Loom.Tools.FileWrite.run(
+  %{
+    file_path: "lib/my_app/features/auth/session.ex",
+    content: "defmodule MyApp.Auth.Session do\nend"
+  },
+  context
+)
+# Creates lib/my_app/features/auth/ directories automatically
+```
+</CodeGroup>
+
+<Warning>
+  Always use `file_read` before `file_write` when modifying existing files, or use `file_edit` for precise changes.
+</Warning>
+
+---
+
+## file_edit
+
+Performs exact string replacement in a file. Designed to prevent ambiguous edits.
+
+<ParamField path="file_path" type="string" required>
+  Path to the file relative to project root
+</ParamField>
+
+<ParamField path="old_string" type="string" required>
+  The exact text to find and replace. Must match exactly including whitespace and indentation.
+</ParamField>
+
+<ParamField path="new_string" type="string" required>
+  The text to replace it with. Must be different from `old_string`.
+</ParamField>
+
+<ParamField path="replace_all" type="boolean" default="false">
+  Replace all occurrences. When `false`, `old_string` must appear exactly once to prevent ambiguous edits.
+</ParamField>
+
+### Returns
+
+Success response includes:
+- Number of occurrences replaced
+- File path
+
+```
+Replaced 1 occurrence(s) in lib/my_app/router.ex
+```
+
+### Validation Rules
+
+<Steps>
+  <Step title="String Not Found">
+    If `old_string` doesn't exist in the file:
+    ```
+    {:error, "old_string not found in file. Make sure the text matches exactly..."}
+    ```
+  </Step>
+  
+  <Step title="Multiple Matches Without replace_all">
+    If `old_string` appears multiple times and `replace_all` is `false`:
+    ```
+    {:error, "old_string appears 3 times. Use replace_all: true to replace all, or provide a larger unique string."}
+    ```
+  </Step>
+  
+  <Step title="Successful Edit">
+    When validation passes, the replacement is applied and the file is written.
+  </Step>
+</Steps>
+
+### Usage Examples
+
+<CodeGroup>
+```elixir Single occurrence edit
+{:ok, result} = Loom.Tools.FileEdit.run(
+  %{
+    file_path: "lib/my_app/router.ex",
+    old_string: "plug :match",
+    new_string: "plug :match\n  plug :auth"
+  },
+  %{project_path: "/home/user/project"}
+)
+```
+
+```elixir Multiline replacement
+Loom.Tools.FileEdit.run(
+  %{
+    file_path: "lib/my_app/user.ex",
+    old_string: """
+    def create_user(attrs) do
+      %User{}
+      |> changeset(attrs)
+      |> Repo.insert()
+    end
+    """,
+    new_string: """
+    def create_user(attrs) do
+      %User{}
+      |> changeset(attrs)
+      |> validate_email()
+      |> Repo.insert()
+    end
+    """
+  },
+  context
+)
+```
+
+```elixir Replace all occurrences
+Loom.Tools.FileEdit.run(
+  %{
+    file_path: "lib/my_app/legacy.ex",
+    old_string: "OldModule",
+    new_string: "NewModule",
+    replace_all: true
+  },
+  context
+)
+# Replaces every instance of "OldModule" in the file
+```
+
+```elixir Provide context for uniqueness
+# This will fail if "def hello" appears multiple times
+Loom.Tools.FileEdit.run(
+  %{
+    file_path: "lib/my_app/greetings.ex",
+    old_string: "def hello",
+    new_string: "def hello_world"
+  },
+  context
+)
+
+# Instead, include surrounding context to make it unique
+Loom.Tools.FileEdit.run(
+  %{
+    file_path: "lib/my_app/greetings.ex",
+    old_string: """
+    defmodule Greetings do
+      def hello do
+        "hi"
+      end
+    end
+    """,
+    new_string: """
+    defmodule Greetings do
+      def hello_world do
+        "hi"
+      end
+    end
+    """
+  },
+  context
+)
+```
+</CodeGroup>
+
+### Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Exact Matching" icon="equals">
+    Whitespace matters. Copy the exact indentation and line endings from `file_read` output.
+  </Card>
+  
+  <Card title="Include Context" icon="brackets-curly">
+    When the string might appear multiple times, include surrounding lines to make it unique.
+  </Card>
+  
+  <Card title="Use replace_all Wisely" icon="repeat">
+    Only use `replace_all: true` when you're certain you want to replace every occurrence (e.g., renaming a variable).
+  </Card>
+  
+  <Card title="Read First" icon="book-open">
+    Always use `file_read` to see the current file state before editing.
+  </Card>
+</CardGroup>
+
+## Implementation Details
+
+All file operations are implemented in `lib/loom/tools/`:
+- `file_read.ex` - Source: [lib/loom/tools/file_read.ex:1](~/workspace/source/lib/loom/tools/file_read.ex:1)
+- `file_write.ex` - Source: [lib/loom/tools/file_write.ex:1](~/workspace/source/lib/loom/tools/file_write.ex:1)
+- `file_edit.ex` - Source: [lib/loom/tools/file_edit.ex:1](~/workspace/source/lib/loom/tools/file_edit.ex:1)
+
+Each tool uses `Loom.Tool.safe_path!/2` for path validation.

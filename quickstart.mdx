@@ -1,80 +1,364 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with your first Loom coding session in minutes
 ---
 
-## Get started in three steps
+## Choose Your Interface
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+Loom offers two ways to interact with your AI coding assistant:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Web UI" icon="window">
+    Real-time streaming chat, file browser, diff viewer, and decision graph visualization
+  </Card>
+  
+  <Card title="CLI" icon="terminal">
+    REPL-style interface with markdown rendering and colored diffs
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+Both interfaces connect to the same session GenServer, so you can switch between them mid-conversation.
+
+## Web UI
+
+<Steps>
+  <Step title="Start the Phoenix server">
+    ```bash
+    mix phx.server
+    ```
+    
+    You'll see output like:
+    
+    ```
+    [info] Running LoomWeb.Endpoint with Bandit 1.6.0 at 127.0.0.1:4200 (http)
+    [info] Access LoomWeb.Endpoint at http://localhost:4200
+    ```
+  </Step>
+  
+  <Step title="Open the workspace">
+    Navigate to [http://localhost:4200](http://localhost:4200) in your browser.
+    
+    The workspace has four main areas:
+    
+    - **Chat panel** — Send messages and see streaming responses
+    - **File tree** — Browse your project files
+    - **Tabs** — Switch between Files, Diffs, Decision Graph, and Terminal
+    - **Model selector** — Choose which LLM to use
+  </Step>
+  
+  <Step title="Send your first message">
+    Click into the chat input at the bottom and type a question:
+    
+    ```
+    What is this project about? Show me the main application file.
+    ```
+    
+    Press `Shift+Enter` to send (or click the send button).
+    
+    Watch as Loom:
+    1. Uses the `directory_list` tool to explore the project structure
+    2. Uses `file_read` to read relevant files
+    3. Responds with a summary and shows you the code
+  </Step>
+  
+  <Step title="Approve tool permissions">
+    When Loom wants to use a tool that requires permission (like `file_write` or `shell`), you'll see a permission modal.
+    
+    Review the tool parameters and approve or deny the operation.
+    
+    <Tip>
+      You can grant session-wide approval by checking "Remember this decision" or configure auto-approved tools in `.loom.toml`.
+    </Tip>
+  </Step>
+  
+  <Step title="View the decision graph">
+    Click the **Decision Graph** tab to see an interactive SVG visualization of Loom's reasoning:
+    
+    - **Blue nodes** — Goals and decisions
+    - **Green nodes** — Actions and outcomes
+    - **Yellow nodes** — Observations
+    - **Edges** — Relationships (leads_to, chosen, rejected, etc.)
+    
+    The graph persists across sessions, so Loom remembers why decisions were made.
+  </Step>
+</Steps>
+
+## CLI
+
+<Steps>
+  <Step title="Build the escript (if you haven't already)">
+    ```bash
+    mix escript.build
+    ```
+    
+    This creates a `./loom` executable in your project directory.
+  </Step>
+  
+  <Step title="Start an interactive session">
+    Navigate to your project directory and run:
+    
+    ```bash
+    ./loom --project /path/to/your/project
+    ```
+    
+    Or from within your project:
+    
+    ```bash
+    ./loom --project .
+    ```
+    
+    You'll see the Loom prompt:
+    
+    ```
+    Loom v0.1.0 — Elixir-native AI coding assistant
+    Session: abc123-def456
+    Model: anthropic:claude-sonnet-4-6
+    Project: /Users/you/my-project
+    Type /help for commands, /quit to exit
+    
+    >
+    ```
+  </Step>
+  
+  <Step title="Ask a question">
+    Type a question and press Enter:
+    
+    ```
+    > What does the auth module do?
+    ```
+    
+    Loom will:
+    1. Search for auth-related files using `file_search`
+    2. Read the most relevant files with `file_read`
+    3. Analyze the code and respond with an explanation
+    
+    You'll see the tool calls and their results streamed in real-time.
+  </Step>
+  
+  <Step title="Make an edit">
+    Ask Loom to modify code:
+    
+    ```
+    > Add a function to the user schema that checks if a user is an admin
+    ```
+    
+    Loom will:
+    1. Read the user schema file
+    2. Propose an edit using `file_edit`
+    3. Show you a colored diff
+    4. Ask for approval
+    
+    You'll see output like:
+    
+    ```diff
+    lib/my_app/accounts/user.ex
+    @@ -45,6 +45,11 @@
+       field :email, :string
+       field :role, :string, default: "user"
+     end
+    +
+    +  def admin?(user) do
+    +    user.role == "admin"
+    +  end
+     end
+    ```
+    
+    Approve with `y` or deny with `n`.
+  </Step>
+</Steps>
+
+## CLI Commands
+
+Once in an interactive session, you can use these commands:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/model <name>` | Switch LLM model mid-session |
+| `/history` | Show conversation history |
+| `/sessions` | List all saved sessions |
+| `/clear` | Clear the terminal |
+| `/quit` or `/exit` | Exit Loom |
+
+## CLI Options
+
+<ParamField path="--model" type="string" default="From config">
+  Specify which LLM model to use:
+  
+  ```bash
+  ./loom --model anthropic:claude-opus-4-6 --project .
+  ```
+</ParamField>
+
+<ParamField path="--project" type="string" default="Current directory">
+  Path to your project directory:
+  
+  ```bash
+  ./loom --project /path/to/project
+  ```
+</ParamField>
+
+<ParamField path="--yes" type="boolean" default="false">
+  Auto-approve all permission prompts:
+  
+  ```bash
+  ./loom --yes --project .
+  ```
+  
+  <Warning>
+    Use with caution. This skips all permission checks for file writes and shell commands.
+  </Warning>
+</ParamField>
+
+<ParamField path="--resume" type="string">
+  Resume a previous session by ID:
+  
+  ```bash
+  ./loom --resume abc123-def456 --project .
+  ```
+</ParamField>
+
+<ParamField path="--help" type="boolean">
+  Show help message and exit:
+  
+  ```bash
+  ./loom --help
+  ```
+</ParamField>
+
+<ParamField path="--version" type="boolean">
+  Show version and exit:
+  
+  ```bash
+  ./loom --version
+  ```
+</ParamField>
+
+## One-Shot Mode
+
+You can ask a single question without entering an interactive session:
+
+```bash
+./loom --project . "What does the auth module do?"
+```
+
+Loom will respond and exit. This is useful for:
+
+- Quick code explanations
+- CI/CD integrations
+- Scripting and automation
+
+## Example Session: Fixing a Failing Test
+
+Here's a real example of using Loom to fix a failing test:
+
+<Steps>
+  <Step title="Run your tests">
+    ```bash
+    > Can you run the tests and fix any failures?
+    ```
+  </Step>
+  
+  <Step title="Loom uses the shell tool">
+    ```
+    [tool] shell
+    command: mix test
+    
+    [result]
+    1) test user validation requires email (MyApp.AccountsTest)
+       test/my_app/accounts_test.exs:45
+       Expected truthy, got false
+    ```
+  </Step>
+  
+  <Step title="Loom reads the test file">
+    ```
+    [tool] file_read
+    file_path: test/my_app/accounts_test.exs
+    ```
+  </Step>
+  
+  <Step title="Loom reads the implementation">
+    ```
+    [tool] file_read
+    file_path: lib/my_app/accounts/user.ex
+    ```
+  </Step>
+  
+  <Step title="Loom proposes a fix">
+    ```
+    The test is failing because the user changeset isn't validating that
+    email is required. I'll add a validation:
+    
+    [tool] file_edit
+    file_path: lib/my_app/accounts/user.ex
+    old_string: ||
+      def changeset(user, attrs) do
+        user
+        |> cast(attrs, [:email, :name])
+      end
+    new_string: ||
+      def changeset(user, attrs) do
+        user
+        |> cast(attrs, [:email, :name])
+        |> validate_required([:email])
+      end
+    ```
+    
+    You'll see a diff and be asked to approve.
+  </Step>
+  
+  <Step title="Loom verifies the fix">
+    ```
+    [tool] shell
+    command: mix test
+    
+    [result]
+    Finished in 0.3 seconds
+    42 tests, 0 failures
+    ```
+  </Step>
+</Steps>
+
+## Project Rules
+
+Create a `LOOM.md` file in your project root to give Loom persistent instructions:
+
+```markdown LOOM.md
+# Project Instructions
+
+This is a Phoenix LiveView app using Ecto with PostgreSQL.
+
+## Rules
+- Always run `mix format` after editing .ex files
+- Run `mix test` before committing
+- Use `binary_id` for all primary keys
+- Follow the context module pattern in `lib/myapp/`
+
+## Allowed Operations
+- Shell: `mix *`, `git *`, `elixir *`
+- File Write: `lib/**`, `test/**`, `priv/repo/migrations/**`
+- File Write Denied: `config/runtime.exs`, `.env*`
+```
+
+Loom will load these rules automatically and follow them across all sessions.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Decision Graph" icon="diagram-project" href="/concepts/decision-graphs">
+    Learn how Loom remembers context across sessions
+  </Card>
+  
+  <Card title="Project Rules" icon="file-lines" href="/guides/project-rules">
+    Advanced LOOM.md configuration
+  </Card>
+  
+  <Card title="Tools" icon="toolbox" href="/tools/overview">
+    Explore all 11 built-in tools
+  </Card>
+  
+  <Card title="Permissions" icon="shield" href="/guides/permissions">
+    Configure tool permissions and auto-approval
+  </Card>
+</CardGroup>
